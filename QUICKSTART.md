@@ -290,6 +290,40 @@ Layout: keys mirror `PipelineConfig` (`source`, `preprocess`, `detector`,
 
 ---
 
+## 12. Troubleshooting
+
+Common failure modes seen so far and the knob that fixes each. Add a row
+when you hit a new one — this is meant to be the muscle memory we
+accumulate as the project matures.
+
+| Symptom                                          | Likely cause                                                      | Fix                                                                                       |
+|--------------------------------------------------|-------------------------------------------------------------------|-------------------------------------------------------------------------------------------|
+| Boxes flicker on / off                           | per-frame IoU matching can't keep up with motion at 4K            | `--async-detection` + Kalman is enabled in tracker by default; combine with `--detect-every-n 2-3` so tracks coast on motion model |
+| Almost no cars on aerial / drone footage         | COCO-trained yolov8n can't see 5-10 px cars                       | use `--variant visdrone` weights (`scripts/download_yolov8_weights.py`), `--num-classes 10` |
+| Recall still low with VisDrone @ 640             | cars too small inside 640 letterbox                               | re-export at `--imgsz 1280` *and* pass `--imgsz 1280` to the CLI (export size is shape-locked) |
+| Even more recall needed                          | need to zoom further into the frame                               | `--detector onnx-tiled --tiles 3x3` (or 2×2); combine with `--tile-on-demand --async-detection` to stay real-time |
+| `--tile-input-size N` does nothing               | ONNX shape-locked to its export imgsz; CoreML EP rejects mismatch | TiledOnnxDetector auto-snaps to the model's imgsz now — re-export the model at the size you want |
+| 200 % CPU on raw playback                        | cv2.imshow software-blits 4K frames on macOS                      | already swapped to SDLDisplaySink (Metal/GL); raw mode now ~15 % CPU at 4K                |
+| Many boxes on factory yards / parking lots       | model fires on dense object clusters in tiles                     | raise `--score-threshold 0.35-0.45`; or use a larger model (`--variant visdrone-s`)       |
+| ID swaps when cars pass close together           | greedy IoU matching, no appearance features                       | known limitation; add a re-ID head later (phase 9 perf)                                   |
+| Activity Monitor "GPU" at 1 %                    | macOS GPU column doesn't show ANE                                 | ANE is busy via CoreML EP — `powermetrics --samplers ane` to confirm                       |
+| `lowlatcv` segfaults on macOS with `imshow`      | cv2 + pygame both bundle SDL2 — known objc class clash warning    | use `--display-backend sdl` (default); the cv2 fallback was removed                       |
+| `Error in building plan` from CoreML EP          | model imgsz ≠ tensor imgsz                                        | re-export the ONNX at the exact imgsz you're feeding (no `dynamic=True` for CoreML EP)    |
+
+## Known gaps (work in progress)
+
+- Tracker has no appearance feature → ID swaps in dense traffic. Add re-ID or
+  motion-only Hungarian assignment later.
+- VisDrone `pedestrian` / `people` / `bicycle` recall is near zero at 640 — too
+  small. Tile-on-demand helps a bit; a larger model or further zoom needed.
+- Tile-on-demand cold start: brand-new clips have no track hints yet, so the
+  first ~9 frames are needed for the rotating refresh to cover all tiles.
+- Preprocess still runs on the critical path even when `--detector onnx-tiled`
+  (which ignores `Frame.tensor`). Wasted ~3-15 ms of CPU per frame — move
+  into the AsyncDetector worker.
+- cv2.VideoCapture forces a BGR memcpy per frame. PyAV / direct VideoToolbox
+  hand-off could skip that and feed NV12 straight to the GPU texture.
+
 ## Cheat sheet of every CLI flag
 
 Built from `src/lowlatcv/app.py`. Re-run `uv run lowlatcv run --help` for the
