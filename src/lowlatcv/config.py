@@ -62,12 +62,18 @@ class DetectorConfig:
 @dataclass(frozen=True, slots=True)
 class TrackerConfig:
     backend: str = "bytetrack"
-    iou_threshold: float = 0.3
+    iou_threshold: float = 0.2
     max_age: int = 30
     lost_age: int = 30
     min_hits: int = 3
     score_high_threshold: float = 0.5
     history_size: int = 30
+    # Fallback motion-association pass: when IoU is 0 (fast object that
+    # outran its predicted bbox), allow matching by centroid distance
+    # provided the candidate detection is the same class and its centroid
+    # sits within ``motion_distance_factor * max(predicted_w, predicted_h)``
+    # of the predicted centroid. Set to 0 to disable.
+    motion_distance_factor: float = 2.0
 
 
 @dataclass(frozen=True, slots=True)

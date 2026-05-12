@@ -206,7 +206,33 @@ class ByteTracker:
         for li, di in matches_low:
             self._on_match(recover_lanes[li], low[di])
 
-        for li in still_unmatched_idx:
+        # Third pass: distance-based fallback for fast objects whose Kalman
+        # prediction has zero (or stale) velocity — the predicted bbox does
+        # not overlap the new measurement, so IoU is 0 even though the
+        # detection clearly belongs to this track. Match by centroid
+        # distance gated by predicted bbox size; require class agreement so
+        # a moving car doesn't snap onto a stationary truck nearby.
+        still_unmatched_after_motion: list[int] = list(still_unmatched_idx)
+        if self._cfg.motion_distance_factor > 0 and unmatched_high_idx:
+            motion_lanes = [recover_lanes[i] for i in still_unmatched_idx]
+            motion_dets = [high[i] for i in unmatched_high_idx]
+            motion_matches, leftover_motion_lane_idx, leftover_motion_det_idx = (
+                _greedy_match_by_distance(
+                    [lane.bbox for lane in motion_lanes],
+                    [lane.class_id for lane in motion_lanes],
+                    [d.bbox for d in motion_dets],
+                    [d.class_id for d in motion_dets],
+                    distance_factor=self._cfg.motion_distance_factor,
+                )
+            )
+            for li, di in motion_matches:
+                self._on_match(motion_lanes[li], motion_dets[di])
+            still_unmatched_after_motion = [
+                still_unmatched_idx[i] for i in leftover_motion_lane_idx
+            ]
+            unmatched_high_idx = [unmatched_high_idx[i] for i in leftover_motion_det_idx]
+
+        for li in still_unmatched_after_motion:
             self._on_miss(recover_lanes[li])
 
         for lane in self._lanes:
@@ -323,6 +349,52 @@ def _greedy_match(
             if iou >= iou_threshold:
                 pairs.append((iou, ti, di))
     pairs.sort(reverse=True)
+    used_t: set[int] = set()
+    used_d: set[int] = set()
+    matches: list[tuple[int, int]] = []
+    for _, ti, di in pairs:
+        if ti in used_t or di in used_d:
+            continue
+        matches.append((ti, di))
+        used_t.add(ti)
+        used_d.add(di)
+    unmatched_t = [i for i in range(len(track_bboxes)) if i not in used_t]
+    unmatched_d = [i for i in range(len(det_bboxes)) if i not in used_d]
+    return matches, unmatched_t, unmatched_d
+
+
+def _greedy_match_by_distance(
+    track_bboxes: list[tuple[int, int, int, int]],
+    track_classes: list[int],
+    det_bboxes: list[tuple[int, int, int, int]],
+    det_classes: list[int],
+    distance_factor: float,
+) -> tuple[list[tuple[int, int]], list[int], list[int]]:
+    """Greedy centroid-distance matching, gated by predicted bbox size and class.
+
+    Used as the fallback pass when IoU is 0 because a fast-moving object has
+    outpaced the Kalman prediction. A pair is a candidate iff the detection
+    centroid sits within ``distance_factor * max(predicted_w, predicted_h)``
+    of the track centroid AND they share a class. Sorted by smallest distance.
+    """
+    if not track_bboxes or not det_bboxes:
+        return [], list(range(len(track_bboxes))), list(range(len(det_bboxes)))
+    pairs: list[tuple[float, int, int]] = []
+    for ti, tb in enumerate(track_bboxes):
+        tcx = (tb[0] + tb[2]) / 2.0
+        tcy = (tb[1] + tb[3]) / 2.0
+        tw = max(1.0, tb[2] - tb[0])
+        th = max(1.0, tb[3] - tb[1])
+        gate = distance_factor * max(tw, th)
+        for di, db in enumerate(det_bboxes):
+            if track_classes[ti] != det_classes[di]:
+                continue
+            dcx = (db[0] + db[2]) / 2.0
+            dcy = (db[1] + db[3]) / 2.0
+            dist = ((dcx - tcx) ** 2 + (dcy - tcy) ** 2) ** 0.5
+            if dist <= gate:
+                pairs.append((dist, ti, di))
+    pairs.sort()  # smallest distance first
     used_t: set[int] = set()
     used_d: set[int] = set()
     matches: list[tuple[int, int]] = []
