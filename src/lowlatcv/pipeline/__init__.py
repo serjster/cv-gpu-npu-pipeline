@@ -10,7 +10,7 @@ from lowlatcv.pipeline.detector import CoreMLDetector, Detector, FakeDetector, O
 from lowlatcv.pipeline.overlay import Overlay
 from lowlatcv.pipeline.preprocess import Preprocess
 from lowlatcv.pipeline.runner import Pipeline
-from lowlatcv.pipeline.sink import DisplaySink, FileSink, FrameSink, NullSink, SDLDisplaySink
+from lowlatcv.pipeline.sink import FileSink, FrameSink, NullSink, SDLDisplaySink
 from lowlatcv.pipeline.source import FileSource, FrameSource, WebcamSource
 from lowlatcv.pipeline.stage import EOF, Stage, StageRunner
 
@@ -18,7 +18,6 @@ __all__ = [
     "EOF",
     "CoreMLDetector",
     "Detector",
-    "DisplaySink",
     "FakeDetector",
     "FileSink",
     "FileSource",

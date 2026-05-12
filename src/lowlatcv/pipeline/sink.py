@@ -1,15 +1,13 @@
 """Frame sinks: ``FrameSink`` Protocol + concrete adapters + kind factory.
 
-``NullSink`` drops frames (bench mode). ``DisplaySink`` calls
-``cv2.imshow`` inline on the main thread (legacy / no-GPU debug path).
-``SDLDisplaySink`` uses pygame-ce's ``_sdl2`` Renderer + a single
-streaming Texture so the per-frame upload runs on the GPU (Metal on
-macOS, OpenGL/Vulkan on Linux, D3D on Windows) — the default
-display backend. ``FileSink`` adapts ``cv2.VideoWriter`` (ffmpeg-pipe
-backend deferred to a later phase). ``from_config(cfg)`` is the Factory
-Method that selects a backend from ``SinkConfig.kind`` and
-``SinkConfig.display_backend``; it is also surfaced as
-``FrameSink.from_config`` on the Protocol class for ergonomics.
+``NullSink`` drops frames (bench mode). ``SDLDisplaySink`` uses
+pygame-ce's ``_sdl2`` Renderer + a single streaming Texture so the
+per-frame upload runs on the GPU (Metal on macOS, OpenGL/Vulkan on
+Linux, D3D on Windows). ``FileSink`` adapts ``cv2.VideoWriter``
+(ffmpeg-pipe backend deferred to a later phase). ``from_config(cfg)``
+is the Factory Method that selects a backend from ``SinkConfig.kind``;
+it is also surfaced as ``FrameSink.from_config`` on the Protocol class
+for ergonomics.
 """
 
 from __future__ import annotations
@@ -58,37 +56,6 @@ class NullSink:
         return None
 
     async def teardown(self) -> None: ...
-
-
-class DisplaySink:
-    """Adapter around ``cv2.imshow`` — must run on the main thread (macOS requirement).
-
-    Kept as a fallback debug backend. The default display sink is
-    ``SDLDisplaySink`` because cv2.imshow software-blits high-resolution
-    frames on macOS and saturates the CPU on 4K.
-    """
-
-    name = "sink"
-
-    def __init__(self, window_name: str = "lowlatcv") -> None:
-        self._window = window_name
-        self._opened = False
-
-    async def setup(self) -> None: ...
-
-    async def process(self, item: Frame) -> None:
-        if not self._opened:
-            cv2.namedWindow(self._window, cv2.WINDOW_NORMAL)
-            self._opened = True
-        cv2.imshow(self._window, item.image)
-        cv2.waitKey(1)
-        return None
-
-    async def teardown(self) -> None:
-        if self._opened:
-            cv2.destroyWindow(self._window)
-            cv2.waitKey(1)
-            self._opened = False
 
 
 class SDLDisplaySink:
@@ -209,11 +176,7 @@ def _codec_to_fourcc(codec: str) -> str:
 
 def _from_config(cfg: SinkConfig) -> FrameSink:
     if cfg.kind == "display":
-        if cfg.display_backend == "cv2":
-            return DisplaySink()
-        if cfg.display_backend == "sdl":
-            return SDLDisplaySink(vsync=cfg.vsync)
-        raise ValueError(f"unknown display_backend: {cfg.display_backend}")
+        return SDLDisplaySink(vsync=cfg.vsync)
     if cfg.kind == "null":
         return NullSink()
     if cfg.kind == "file":

@@ -71,7 +71,6 @@ class SinkConfig:
     kind: Literal["display", "file", "null"] = "null"
     output: str | None = None
     codec: str = "h264"
-    display_backend: Literal["sdl", "cv2"] = "sdl"
     vsync: bool = False
 
 

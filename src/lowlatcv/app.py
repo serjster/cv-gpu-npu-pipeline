@@ -126,11 +126,6 @@ def run(
         "--raw",
         help="passthrough mode: Source → Sink only, no preprocess/detector/overlay (baseline decode+display cost).",
     ),
-    display_backend: str | None = typer.Option(
-        None,
-        "--display-backend",
-        help="display sink backend: sdl (GPU, default) or cv2 (cv2.imshow fallback).",
-    ),
     vsync: bool = typer.Option(False, "--vsync", help="enable display vsync"),
     fps: float | None = typer.Option(
         None,
@@ -149,8 +144,6 @@ def run(
         sink_cfg = dataclasses.replace(sink_cfg, kind=sink)  # type: ignore[arg-type]
     if output is not None:
         sink_cfg = dataclasses.replace(sink_cfg, output=str(output))
-    if display_backend is not None:
-        sink_cfg = dataclasses.replace(sink_cfg, display_backend=display_backend)  # type: ignore[arg-type]
     if vsync:
         sink_cfg = dataclasses.replace(sink_cfg, vsync=True)
     cfg = dataclasses.replace(cfg, sink=sink_cfg)
