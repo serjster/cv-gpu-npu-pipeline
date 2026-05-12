@@ -1,8 +1,10 @@
-# Phase 5 — VLM async (GPU/ROCm via Ollama)
+# Phase 5 — VLM async (GPU via Ollama)
 
-**Goal:** Per-track captions enriched by a Vision-Language Model running **off the per-frame critical path**. Per-frame FPS must be unaffected by VLM latency. First backend is Ollama on the AMD ROCm GPU — its mature HTTP API gives the fastest dev loop and validates the async architecture before adding NPU-specific complexity.
+**Goal:** Per-track captions enriched by a Vision-Language Model running **off the per-frame critical path**. Per-frame FPS must be unaffected by VLM latency. First backend is **Ollama**, which abstracts the host GPU (ROCm on Linux, Metal/MPS on macOS) behind a single HTTP API — fastest dev loop and validates the async architecture before adding NPU-specific complexity.
 
-**Why Ollama before FastFlowLM:** the Strategy pattern means swapping later is contained. The risk being de-risked here is the *decoupling*, not the choice of accelerator. Once the architecture holds with a slow backend, the NPU backend in Phase 6 is a drop-in.
+**Why Ollama before the NPU backends:** the Strategy pattern means swapping later is contained. The risk being de-risked here is the *decoupling*, not the choice of accelerator. Once the architecture holds with a slow backend, the NPU backends in Phase 6 are drop-ins.
+
+**Cross-profile note:** the Ollama backend is identical on both profiles — only the model selection differs (e.g. `qwen2-vl:7b` on ROCm with enough VRAM, a smaller `moondream` on macOS Metal).
 
 **Design patterns introduced:**
 

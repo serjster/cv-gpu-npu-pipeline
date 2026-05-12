@@ -13,7 +13,8 @@
 **Tasks:**
 
 - [ ] `src/lowlatcv/pipeline/detector.py` — `Detector` Protocol, `Detector.from_config` Factory Method
-- [ ] `OnnxDetector` backend with execution-provider selection (`CPUExecutionProvider`, `CUDAExecutionProvider`, `ROCMExecutionProvider`, `MIGraphXExecutionProvider`)
+- [ ] `OnnxDetector` backend with execution-provider selection (`CPUExecutionProvider`, `ROCMExecutionProvider`, `MIGraphXExecutionProvider`, `CoreMLExecutionProvider`, `CUDAExecutionProvider`) — picked from `cfg.detector.execution_provider`, with a sensible default per OS
+- [ ] `CoreMLDetector` backend (`.mlpackage` via `coremltools`) — sibling Strategy; lazy-imported so Linux profile doesn't need `coremltools` installed
 - [ ] `src/lowlatcv/pipeline/detector_post.py` — pure NMS + threshold + coord-back-to-original-frame transform
 - [ ] `src/lowlatcv/pipeline/overlay.py` — `Overlay` stage rendering bboxes onto `Frame.image` (label = class id for now)
 - [ ] Wire `FrameSource → Preprocess → Detector → Overlay → Sink` in `app.build_pipeline`
@@ -27,4 +28,4 @@
 
 **Decision (block):** which weights ship as the default? Candidates: YOLOv8n (small, fast), YOLOv11n (newer, similar size), RT-DETR-S (transformer, heavier but anchor-free). Resolve before benchmarking. Until resolved, use `FakeDetector` returning canned boxes for tests.
 
-**Done when:** `lowlatcv run --source <mp4> --display --detector onnx --weights yolov8n.onnx` shows live bounding boxes, and `lowlatcv bench` reports detector latency as a distinct line in the table.
+**Done when:** `lowlatcv run --source <mp4> --display --detector onnx --weights yolov8n.onnx` shows live bounding boxes on the Linux profile, the CoreML backend produces equivalent boxes on macOS, and `lowlatcv bench` reports detector latency as a distinct line in the table on both profiles.

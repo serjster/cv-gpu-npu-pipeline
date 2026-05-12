@@ -27,7 +27,7 @@
 - [ ] `tests/test_pipeline_lifecycle.py` — start → process N items → stop, teardown order is reverse
 - [ ] `tests/test_tracer.py` — percentile maths, nested-span isolation, queue-depth capture
 - [ ] `ruff` + `mypy --strict` + `pytest` configured in `pyproject.toml`; `uv run lint`, `uv run test`, `uv run format` all green on empty scaffold
-- [ ] Update `ARCHITECTURE.md` to reflect the Linux + AMD dev host (ROCm GPU, XDNA NPU) in place of macOS / CoreML / MPS; keep the FPGA target intact
+- [ ] Update `ARCHITECTURE.md` to cover **both** runtime profiles (Linux + AMD ROCm/XDNA and macOS + Apple Silicon CoreML/MPS/ANE) as parallel first-class hosts, kept swappable via Strategy. Keep the FPGA target intact.
 - [ ] `ast-index update` after `src/` has files, confirm `ast-index stats` reports a non-empty index
 
 **Done when:** `uv run pytest` is green on the contract tests, `uv run lint` is clean, and `uv run lowlatcv bench --frames 10` runs a stub pipeline end-to-end and prints a latency table (even if every stage is a passthrough).

@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-Python reference pipeline that emulates an ultra-low-latency computer-vision app for the AMD Versal AI Edge VEK385 FPGA platform. Runs on macOS. Performs per-frame object detection + tracking, with periodic VLM captioning per track. Designed so per-stage latency, queue depths, and back-pressure behaviour can be compared 1:1 against the future FPGA implementation.
+Python reference pipeline that emulates an ultra-low-latency computer-vision app for the AMD Versal AI Edge VEK385 FPGA platform. Runs on **macOS (Apple Silicon, CoreML/MPS/ANE)** *and* **Linux (AMD ROCm GPU, Ryzen AI XDNA NPU)** as parallel first-class runtime profiles. Performs per-frame object detection + tracking, with periodic VLM captioning per track. Designed so per-stage latency, queue depths, and back-pressure behaviour can be compared 1:1 against the future FPGA implementation.
 
 ## Agent Instructions
 
