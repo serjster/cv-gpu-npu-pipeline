@@ -194,6 +194,28 @@ def _apply_detector_overrides(
     return dataclasses.replace(cfg, detector=det)
 
 
+def _apply_tracker_overrides(
+    cfg: PipelineConfig,
+    tracker_iou_threshold: float | None,
+    tracker_motion_distance_factor: float | None,
+    tracker_max_age: int | None,
+    tracker_lost_age: int | None,
+    tracker_min_hits: int | None,
+) -> PipelineConfig:
+    t = cfg.tracker
+    if tracker_iou_threshold is not None:
+        t = dataclasses.replace(t, iou_threshold=tracker_iou_threshold)
+    if tracker_motion_distance_factor is not None:
+        t = dataclasses.replace(t, motion_distance_factor=tracker_motion_distance_factor)
+    if tracker_max_age is not None:
+        t = dataclasses.replace(t, max_age=tracker_max_age)
+    if tracker_lost_age is not None:
+        t = dataclasses.replace(t, lost_age=tracker_lost_age)
+    if tracker_min_hits is not None:
+        t = dataclasses.replace(t, min_hits=tracker_min_hits)
+    return dataclasses.replace(cfg, tracker=t)
+
+
 def _parse_tiles(spec: str) -> tuple[int, int]:
     parts = spec.lower().replace("×", "x").split("x")
     if len(parts) != 2:
@@ -280,6 +302,13 @@ def run(
     export_jsonl: Path | None = typer.Option(
         None, "--export-jsonl", help="per-frame JSONL export path (detections + tracks)"
     ),
+    tracker_iou_threshold: float | None = typer.Option(None, "--tracker-iou-threshold"),
+    tracker_motion_distance_factor: float | None = typer.Option(
+        None, "--tracker-motion-distance-factor"
+    ),
+    tracker_max_age: int | None = typer.Option(None, "--tracker-max-age"),
+    tracker_lost_age: int | None = typer.Option(None, "--tracker-lost-age"),
+    tracker_min_hits: int | None = typer.Option(None, "--tracker-min-hits"),
 ) -> None:
     """Run the pipeline end-to-end."""
     cfg = PipelineConfig.load(config)
@@ -315,6 +344,14 @@ def run(
         cfg, vlm, vlm_model, vlm_host, vlm_prompt, vlm_cooldown, vlm_rate, vlm_fake_latency
     )
     cfg = _apply_imgsz(cfg, imgsz)
+    cfg = _apply_tracker_overrides(
+        cfg,
+        tracker_iou_threshold,
+        tracker_motion_distance_factor,
+        tracker_max_age,
+        tracker_lost_age,
+        tracker_min_hits,
+    )
     # Pacing: default on (real-time playback). --fps 0 disables. --fps N overrides.
     if fps is None:
         pace = True
@@ -359,6 +396,13 @@ def bench(
     tile_on_demand: bool = typer.Option(False, "--tile-on-demand"),
     tile_refresh_tiles_per_cycle: int | None = typer.Option(None, "--tile-refresh-tiles-per-cycle"),
     export_jsonl: Path | None = typer.Option(None, "--export-jsonl"),
+    tracker_iou_threshold: float | None = typer.Option(None, "--tracker-iou-threshold"),
+    tracker_motion_distance_factor: float | None = typer.Option(
+        None, "--tracker-motion-distance-factor"
+    ),
+    tracker_max_age: int | None = typer.Option(None, "--tracker-max-age"),
+    tracker_lost_age: int | None = typer.Option(None, "--tracker-lost-age"),
+    tracker_min_hits: int | None = typer.Option(None, "--tracker-min-hits"),
 ) -> None:
     """Run benchmark mode and report latency. Sink is forced to null."""
     cfg = PipelineConfig.load(config)
@@ -385,6 +429,14 @@ def bench(
         cfg, vlm, vlm_model, vlm_host, vlm_prompt, vlm_cooldown, vlm_rate, vlm_fake_latency
     )
     cfg = _apply_imgsz(cfg, imgsz)
+    cfg = _apply_tracker_overrides(
+        cfg,
+        tracker_iou_threshold,
+        tracker_motion_distance_factor,
+        tracker_max_age,
+        tracker_lost_age,
+        tracker_min_hits,
+    )
     limit = frames if frames > 0 else None
     report = asyncio.run(_drive(cfg, limit, report_format, export_jsonl=export_jsonl))
     if report_path is not None:

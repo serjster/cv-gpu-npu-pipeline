@@ -27,10 +27,18 @@ from pathlib import Path
 from typing import Any
 
 # Sweep grid (small by default; expand here when chasing a specific knob).
+# These vary TRACKER behaviour, not detector NMS — to actually move ID-switch
+# and recall under matched detection sets.
 SWEEPS: list[dict[str, Any]] = [
     {"label": "baseline", "extra": []},
-    {"label": "iou=0.10", "extra": ["--iou-threshold", "0.10"]},
-    {"label": "iou=0.30", "extra": ["--iou-threshold", "0.30"]},
+    {"label": "trk_iou=0.10", "extra": ["--tracker-iou-threshold", "0.10"]},
+    {"label": "trk_iou=0.30", "extra": ["--tracker-iou-threshold", "0.30"]},
+    {"label": "motion=1.0", "extra": ["--tracker-motion-distance-factor", "1.0"]},
+    {"label": "motion=3.0", "extra": ["--tracker-motion-distance-factor", "3.0"]},
+    {"label": "motion=0", "extra": ["--tracker-motion-distance-factor", "0"]},
+    {"label": "max_age=5", "extra": ["--tracker-max-age", "5"]},
+    {"label": "max_age=20", "extra": ["--tracker-max-age", "20"]},
+    {"label": "min_hits=1", "extra": ["--tracker-min-hits", "1"]},
 ]
 
 
