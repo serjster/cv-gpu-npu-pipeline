@@ -14,6 +14,17 @@ FPGA reference: `docs/research/versal-vek385-pipeline.md` — the source-of-trut
 
 ## Rules
 
+### Phase-based development
+
+`docs/plan.md` is the entry point for picking up work. **Before starting any work session, read it first** to find the in-progress phase, then open the matching `docs/plan/phase-N-*.md` for the task list.
+
+- Work on **one phase at a time**. Finish the in-progress phase before opening a new one.
+- Tick task checkboxes (`- [ ]` → `- [x]`) in the phase doc as you finish each task — do not batch.
+- When every checkbox in a phase is ticked, mark the phase **closed** in `docs/plan.md` and move the next phase to **in-progress** in the same commit.
+- Phase docs may contain a **Decision** block. Resolve the decision with the user *before* implementing tasks below it, and record the resolution at the top of the phase doc.
+- Do not jump phases. If a real blocker forces it, add a note in the relevant phase doc and surface it.
+- The cross-phase invariants at the bottom of `docs/plan.md` apply to every change.
+
 ### Auto-Commit
 
 Commit immediately after making file changes. Do NOT wait for the user to ask.
