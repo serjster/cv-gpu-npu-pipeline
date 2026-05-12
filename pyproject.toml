@@ -11,6 +11,7 @@ dependencies = [
     "numpy>=2.0",
     "opencv-python>=4.10",
     "pyyaml>=6.0",
+    "pygame-ce>=2.5",
 ]
 
 [project.optional-dependencies]

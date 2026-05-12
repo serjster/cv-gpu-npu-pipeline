@@ -46,16 +46,16 @@ def build_pipeline(
     tracer: Tracer,
     frame_limit: int | None = None,
     raw: bool = False,
+    pace: bool = False,
 ) -> Pipeline:
     """Wire the stage graph.
 
     Full graph: Source → Preprocess → Detector → Overlay → Sink.
-    ``raw=True``: Source → Sink only — pure decode-and-display passthrough,
-    no inference, no copy beyond what cv2 already does. Useful to baseline
-    the host's video-decode + display cost before any CV work lands on
-    the critical path.
+    ``raw=True``: Source → Sink only — pure decode-and-display passthrough.
+    ``pace=True``: source throttles to SourceConfig.target_fps (or the file's
+    intrinsic FPS) so visual playback runs at real-time; bench leaves it off.
     """
-    source = source_module.from_uri(cfg.source.uri, cfg.source, frame_limit=frame_limit)
+    source = source_module.from_uri(cfg.source.uri, cfg.source, frame_limit=frame_limit, pace=pace)
     sink = sink_module.from_config(cfg.sink)
     if raw:
         stages: list[Any] = [source, sink]
@@ -72,11 +72,12 @@ async def _drive(
     frame_limit: int | None,
     fmt: str,
     raw: bool = False,
+    pace: bool = False,
 ) -> str:
     tracer = Tracer()
     reporter = _make_reporter(fmt)
     tracer.subscribe(reporter)
-    pipeline = build_pipeline(cfg, tracer, frame_limit=frame_limit, raw=raw)
+    pipeline = build_pipeline(cfg, tracer, frame_limit=frame_limit, raw=raw, pace=pace)
     await pipeline.run()
     return reporter.render()
 
@@ -125,6 +126,17 @@ def run(
         "--raw",
         help="passthrough mode: Source → Sink only, no preprocess/detector/overlay (baseline decode+display cost).",
     ),
+    display_backend: str | None = typer.Option(
+        None,
+        "--display-backend",
+        help="display sink backend: sdl (GPU, default) or cv2 (cv2.imshow fallback).",
+    ),
+    vsync: bool = typer.Option(False, "--vsync", help="enable display vsync"),
+    fps: float | None = typer.Option(
+        None,
+        "--fps",
+        help="pace the source to N fps (default: file's intrinsic FPS; --fps 0 = no pacing).",
+    ),
 ) -> None:
     """Run the pipeline end-to-end."""
     cfg = PipelineConfig.load(config)
@@ -137,12 +149,24 @@ def run(
         sink_cfg = dataclasses.replace(sink_cfg, kind=sink)  # type: ignore[arg-type]
     if output is not None:
         sink_cfg = dataclasses.replace(sink_cfg, output=str(output))
+    if display_backend is not None:
+        sink_cfg = dataclasses.replace(sink_cfg, display_backend=display_backend)  # type: ignore[arg-type]
+    if vsync:
+        sink_cfg = dataclasses.replace(sink_cfg, vsync=True)
     cfg = dataclasses.replace(cfg, sink=sink_cfg)
     cfg = _apply_detector_overrides(
         cfg, detector, weights, score_threshold, iou_threshold, execution_provider
     )
+    # Pacing: default on (real-time playback). --fps 0 disables. --fps N overrides.
+    if fps is None:
+        pace = True
+    elif fps == 0:
+        pace = False
+    else:
+        cfg = dataclasses.replace(cfg, source=dataclasses.replace(cfg.source, target_fps=fps))
+        pace = True
     limit = frames if frames > 0 else None
-    report = asyncio.run(_drive(cfg, limit, cfg.metrics.format, raw=raw))
+    report = asyncio.run(_drive(cfg, limit, cfg.metrics.format, raw=raw, pace=pace))
     typer.echo(report)
 
 

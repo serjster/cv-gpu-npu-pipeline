@@ -3,11 +3,16 @@
 ``FileSource`` and ``WebcamSource`` are Adapters around ``cv2.VideoCapture``
 running each blocking ``.read()`` on the asyncio default executor so the
 event loop stays free to drive downstream stages. ``from_uri(uri, cfg,
-frame_limit)`` is the Factory Method that picks the right backend from the
-URI scheme (``file://`` / bare path → file; ``webcam:N`` / bare digit →
-webcam; ``rtsp://`` / ``http(s)://`` / ``udp://`` / ``tcp://`` → network via
-VideoCapture). The same factory is also exposed as ``FrameSource.from_uri``
-on the Protocol class for ergonomics.
+frame_limit, pace)`` is the Factory Method that picks the right backend
+from the URI scheme (``file://`` / bare path → file; ``webcam:N`` / bare
+digit → webcam; ``rtsp://`` / ``http(s)://`` / ``udp://`` / ``tcp://`` →
+network via VideoCapture). The same factory is also exposed as
+``FrameSource.from_uri`` on the Protocol class for ergonomics.
+
+Pacing: when ``pace=True``, ``FileSource`` throttles emission to
+``SourceConfig.target_fps`` (falling back to the file's intrinsic FPS
+reported by ``cv2.CAP_PROP_FPS``). Bench runs leave ``pace=False`` so the
+pipeline runs at maximum decode rate.
 """
 
 from __future__ import annotations
@@ -40,9 +45,10 @@ def from_uri(
     uri: str,
     cfg: SourceConfig | None = None,
     frame_limit: int | None = None,
+    pace: bool = False,
 ) -> FrameSource:
     """Factory Method: select a source backend from the URI scheme."""
-    return _from_uri(uri, cfg or SourceConfig(), frame_limit)
+    return _from_uri(uri, cfg or SourceConfig(), frame_limit, pace)
 
 
 if not TYPE_CHECKING:
@@ -61,12 +67,16 @@ class FileSource:
         path: str,
         cfg: SourceConfig | None = None,
         frame_limit: int | None = None,
+        pace: bool = False,
     ) -> None:
         self._path = path
         self._cfg = cfg or SourceConfig()
         self._frame_limit = frame_limit
+        self._pace = pace
         self._cap: Any = None
         self._i = 0
+        self._frame_period_ns: int | None = None
+        self._next_frame_ns: int | None = None
 
     async def setup(self) -> None:
         loop = asyncio.get_running_loop()
@@ -74,10 +84,33 @@ class FileSource:
         if not cap.isOpened():
             raise RuntimeError(f"failed to open source: {self._path}")
         self._cap = cap
+        self._frame_period_ns = self._compute_frame_period_ns(cap)
+        log.info(
+            "FileSource opened path=%s pace=%s effective_fps=%s",
+            self._path,
+            self._pace,
+            None if self._frame_period_ns is None else round(1e9 / self._frame_period_ns, 2),
+        )
+
+    def _compute_frame_period_ns(self, cap: Any) -> int | None:
+        if not self._pace:
+            return None
+        fps = self._cfg.target_fps
+        if fps is None:
+            try:
+                detected = float(cap.get(cv2.CAP_PROP_FPS) or 0.0)
+            except Exception:
+                detected = 0.0
+            if detected > 0:
+                fps = detected
+        if fps is None or fps <= 0:
+            return None
+        return int(round(1e9 / fps))
 
     async def process(self, item: Any) -> Frame | _EOFType:
         if self._frame_limit is not None and self._i >= self._frame_limit:
             return EOF
+        await self._wait_for_next_slot()
         loop = asyncio.get_running_loop()
         ok, image = await loop.run_in_executor(None, self._cap.read)
         if not ok or image is None:
@@ -85,6 +118,18 @@ class FileSource:
         frame = Frame(id=self._i, timestamp_ns=time.perf_counter_ns(), image=image)
         self._i += 1
         return frame
+
+    async def _wait_for_next_slot(self) -> None:
+        if self._frame_period_ns is None:
+            return
+        now = time.perf_counter_ns()
+        if self._next_frame_ns is None:
+            self._next_frame_ns = now + self._frame_period_ns
+            return
+        wait_ns = self._next_frame_ns - now
+        if wait_ns > 0:
+            await asyncio.sleep(wait_ns / 1e9)
+        self._next_frame_ns += self._frame_period_ns
 
     async def teardown(self) -> None:
         if self._cap is not None:
@@ -100,8 +145,9 @@ class WebcamSource(FileSource):
         device_index: int,
         cfg: SourceConfig | None = None,
         frame_limit: int | None = None,
+        pace: bool = False,
     ) -> None:
-        super().__init__(path=str(device_index), cfg=cfg, frame_limit=frame_limit)
+        super().__init__(path=str(device_index), cfg=cfg, frame_limit=frame_limit, pace=pace)
         self._device_index = device_index
 
     async def setup(self) -> None:
@@ -112,19 +158,25 @@ class WebcamSource(FileSource):
         if self._cfg.target_fps is not None:
             cap.set(cv2.CAP_PROP_FPS, float(self._cfg.target_fps))
         self._cap = cap
+        self._frame_period_ns = self._compute_frame_period_ns(cap)
 
 
 _NETWORK_SCHEMES = ("rtsp://", "http://", "https://", "udp://", "tcp://")
 
 
-def _from_uri(uri: str, cfg: SourceConfig, frame_limit: int | None) -> FrameSource:
+def _from_uri(
+    uri: str,
+    cfg: SourceConfig,
+    frame_limit: int | None,
+    pace: bool,
+) -> FrameSource:
     if uri.startswith("webcam:"):
         idx = int(uri.split(":", 1)[1])
-        return WebcamSource(device_index=idx, cfg=cfg, frame_limit=frame_limit)
+        return WebcamSource(device_index=idx, cfg=cfg, frame_limit=frame_limit, pace=pace)
     if uri.startswith(_NETWORK_SCHEMES):
-        return FileSource(path=uri, cfg=cfg, frame_limit=frame_limit)
+        return FileSource(path=uri, cfg=cfg, frame_limit=frame_limit, pace=pace)
     if uri.startswith("file://"):
-        return FileSource(path=uri[len("file://") :], cfg=cfg, frame_limit=frame_limit)
+        return FileSource(path=uri[len("file://") :], cfg=cfg, frame_limit=frame_limit, pace=pace)
     if uri.isdigit():
-        return WebcamSource(device_index=int(uri), cfg=cfg, frame_limit=frame_limit)
-    return FileSource(path=uri, cfg=cfg, frame_limit=frame_limit)
+        return WebcamSource(device_index=int(uri), cfg=cfg, frame_limit=frame_limit, pace=pace)
+    return FileSource(path=uri, cfg=cfg, frame_limit=frame_limit, pace=pace)
