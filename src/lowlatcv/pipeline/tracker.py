@@ -67,7 +67,7 @@ class _Kalman2D:
         cy: float,
         w: float,
         h: float,
-        max_speed_px: float = 100.0,
+        max_speed_px: float = 50.0,
     ) -> None:
         self.x: NDArray[np.float64] = np.array(
             [cx, cy, w, h, 0.0, 0.0], dtype=np.float64
@@ -120,6 +120,26 @@ class _Kalman2D:
         predicted bbox stops moving instead of running away into the void."""
         self.x[4] = 0.0
         self.x[5] = 0.0
+
+    def soft_update(self, cx: float, cy: float, w: float, h: float) -> None:
+        """Snap the bbox position and size to the measurement without letting
+        the filter infer a new velocity from the residual.
+
+        Used for low-confidence association passes (e.g. centroid-distance
+        match for a fast-moving object): the position and size jump to the
+        measurement, but the velocity stays at its previous (predicted) value
+        so a single noisy / wrong match can't slam the box into a new
+        trajectory. Reduces ``P`` for the observed states modestly so a
+        subsequent full update can still adjust velocity.
+        """
+        self.x[0] = cx
+        self.x[1] = cy
+        self.x[2] = w
+        self.x[3] = h
+        # Shrink position/size covariance to reflect the fresh observation
+        # without crediting it as a high-confidence Kalman update.
+        for i in range(4):
+            self.P[i, i] = min(self.P[i, i], 20.0)
 
     def bbox_xyxy(self) -> tuple[int, int, int, int]:
         cx, cy, w, h = self.x[:4]
@@ -226,7 +246,11 @@ class ByteTracker:
                 )
             )
             for li, di in motion_matches:
-                self._on_match(motion_lanes[li], motion_dets[di])
+                # Soft update — distance-only matches are low confidence; let
+                # the position snap to the measurement but don't infer a new
+                # velocity from the large residual (else the box "ejects" on
+                # the next predict).
+                self._on_match(motion_lanes[li], motion_dets[di], soft=True)
             still_unmatched_after_motion = [
                 still_unmatched_idx[i] for i in leftover_motion_lane_idx
             ]
@@ -260,9 +284,12 @@ class ByteTracker:
 
     async def teardown(self) -> None: ...
 
-    def _on_match(self, lane: _Lane, det: Detection) -> None:
+    def _on_match(self, lane: _Lane, det: Detection, soft: bool = False) -> None:
         cx, cy, w, h = _xyxy_to_cxcywh(det.bbox)
-        lane.kalman.update(cx, cy, w, h)
+        if soft:
+            lane.kalman.soft_update(cx, cy, w, h)
+        else:
+            lane.kalman.update(cx, cy, w, h)
         lane.bbox = lane.kalman.bbox_xyxy()
         lane.class_id = det.class_id
         lane.score = det.score

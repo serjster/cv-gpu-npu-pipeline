@@ -41,6 +41,31 @@ uv run python scripts/download_yolov8_weights.py --variant visdrone-s --imgsz 12
 Weights land in `data/models/`. The script also prints the right `lowlatcv`
 command for each variant.
 
+### Newer YOLO families (manual)
+
+The Ultralytics ONNX export path is identical for YOLOv9 / v10 / v11 / v12,
+so swapping in a newer family is a one-liner. Measured on the same VisDrone
+GT image used in §10 (1920×1080, 327 cars):
+
+| Family         | HF repo                          | car F1 @1280 | det ms |
+|----------------|----------------------------------|-------------:|-------:|
+| yolov8n        | `mshamrai/yolov8n-visdrone`      | 0.63         | 53     |
+| yolov11n       | `erbayat/yolov11n-visdrone`      | 0.65         | 72     |
+| yolov12s       | `jadenvr/YOLOv12s-VisDrone`      | not measured | —      |
+| yolov10l       | `dalietng/yolov10l-visdrone`     | not measured | —      |
+
+Take-away: at this scale the v11n upgrade is +3% F1 for +36% latency. Stick
+with v8n unless you have the headroom. To try v11n manually:
+
+```bash
+hf download erbayat/yolov11n-visdrone best.pt --local-dir data/models/yolov11n-visdrone
+uv run python -c "from ultralytics import YOLO; YOLO('data/models/yolov11n-visdrone/best.pt').export(format='onnx', imgsz=1280, opset=12)"
+mv data/models/yolov11n-visdrone/best.onnx data/models/yolov11n-visdrone-1280.onnx
+uv run lowlatcv run --source data/b3d/videos/hwy00.mp4 --display \
+  --detector onnx --weights data/models/yolov11n-visdrone-1280.onnx \
+  --num-classes 10 --imgsz 1280 --async-detection --detect-every-n 3
+```
+
 ## 3. Raw playback (decode + GPU display only)
 
 Baseline for "is the framework adding overhead?" — no preprocess, no
@@ -309,6 +334,7 @@ accumulate as the project matures.
 | Boxes grow / gain phantom velocity over time     | Kalman had vw/vh state + huge initial velocity variance           | fixed — Kalman is now 6-state (no w/h velocity), velocity clamped, frozen on LOST         |
 | Per-tile cache emits stale boxes in on-demand    | TiledOnnxDetector cached old detections from un-rerun tiles       | fixed — on-demand mode emits only this cycle's fresh detections; tracker Kalman holds rest |
 | Fast cars leave a trail of LOST boxes            | Kalman has 0 velocity on first frames → predicted bbox doesn't overlap new detection → IoU=0 → new ID spawns | fixed — tracker now has a 3rd association pass: centroid distance gated by predicted box size + class. Tune via TrackerConfig.motion_distance_factor (default 2.0) |
+| Boxes "eject" / shoot off in random directions    | distance-only match has a large residual → full Kalman update inferred a huge velocity → next predict flies the box | fixed — distance-only matches use a soft update (snap position+size, don't infer velocity). Max speed clamped at 50 px/frame |
 | Activity Monitor "GPU" at 1 %                    | macOS GPU column doesn't show ANE                                 | ANE is busy via CoreML EP — `powermetrics --samplers ane` to confirm                       |
 | `lowlatcv` segfaults on macOS with `imshow`      | cv2 + pygame both bundle SDL2 — known objc class clash warning    | use `--display-backend sdl` (default); the cv2 fallback was removed                       |
 | `Error in building plan` from CoreML EP          | model imgsz ≠ tensor imgsz                                        | re-export the ONNX at the exact imgsz you're feeding (no `dynamic=True` for CoreML EP)    |
