@@ -280,6 +280,7 @@ class TiledOnnxDetector:
         self._cfg = cfg
         self._session: Any = None
         self._input_name: str = ""
+        self._effective_tile_input: int = cfg.tile_input_size
 
     async def setup(self) -> None:
         import onnxruntime as ort
@@ -289,7 +290,25 @@ class TiledOnnxDetector:
         self._session = await loop.run_in_executor(
             None, lambda: ort.InferenceSession(self._cfg.weights, providers=providers)
         )
-        self._input_name = self._session.get_inputs()[0].name
+        meta = self._session.get_inputs()[0]
+        self._input_name = meta.name
+        # The ONNX model is normally exported with a FIXED imgsz (e.g. 640) — the
+        # CoreML EP compiles for that exact shape and fails at run-time when fed
+        # anything else. Auto-detect the model's expected H/W and override
+        # tile_input_size when they disagree, so the user can't accidentally
+        # combine `--tile-input-size 1280` with a 640-only export.
+        shape = meta.shape
+        model_h = int(shape[2]) if isinstance(shape[2], int) else 0
+        model_w = int(shape[3]) if isinstance(shape[3], int) else 0
+        if model_h > 0 and model_w > 0 and model_h == model_w:
+            if model_h != self._cfg.tile_input_size:
+                log.warning(
+                    "tile_input_size=%d disagrees with model fixed imgsz=%d; using %d",
+                    self._cfg.tile_input_size,
+                    model_h,
+                    model_h,
+                )
+            self._effective_tile_input = model_h
         log.info(
             "TiledOnnxDetector loaded weights=%s providers=%s tiles=%dx%d overlap=%.2f tile_input=%d",
             self._cfg.weights,
@@ -297,7 +316,7 @@ class TiledOnnxDetector:
             self._cfg.tile_rows,
             self._cfg.tile_cols,
             self._cfg.tile_overlap,
-            self._cfg.tile_input_size,
+            self._effective_tile_input,
         )
 
     async def process(self, item: Frame) -> Frame:
@@ -328,7 +347,7 @@ class TiledOnnxDetector:
                 if y2 <= y1 or x2 <= x1:
                     continue
                 tile = image[y1:y2, x1:x2]
-                tensor, lb = _letterbox_for_inference(tile, self._cfg.tile_input_size)
+                tensor, lb = _letterbox_for_inference(tile, self._effective_tile_input)
                 raw = self._session.run(None, {self._input_name: tensor})[0]
                 boxes, scores, class_ids = decode_yolov8(np.asarray(raw), self._cfg.num_classes)
                 b, s, cl = filter_threshold_and_nms(

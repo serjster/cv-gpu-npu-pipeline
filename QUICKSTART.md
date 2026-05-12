@@ -59,16 +59,50 @@ Useful flags:
 
 ## 4. Detection + tracking, no captions
 
-Single 640 inference, VisDrone weights. Detector ~12 ms p50 on Apple Silicon
-ANE. Real-time on hwy00.
+**Accuracy is dominated by imgsz, not model size.** Numbers below measured on
+one VisDrone test image (`0000126_11844_d_0000130.jpg`, 1920×1080, 327 cars)
+with `scripts/eval_detector.py`:
+
+| Config                    | car F1 | overall F1 | det ms | ~fps |
+|---------------------------|--------|-----------|--------|------|
+| n @ 640 single            | 0.45   | 0.39      | 15     | 30   |
+| s @ 640 single            | 0.48   | 0.42      | 25     | 30   |
+| **n @ 1280 single**       | 0.63   | 0.56      | 53     | ~19  |
+| s @ 1280 single           | 0.68   | 0.62      | 97     | ~10  |
+| n @ 640 tiles 3×3         | 0.68   | 0.60      | 119    | ~8   |
+| s @ 640 tiles 3×3         | 0.72   | 0.65      | 172    | ~6   |
+| **n @ 1280 tiles 2×2**    | **0.74** | **0.67**  | 184    | ~5   |
+
+The ONNX export is **shape-locked** to its export imgsz (CoreML EP refuses
+mismatches). Pick one of these per use-case:
 
 ```bash
+# Real-time-ish (~19 fps), good recall — recommended default for live demo
+uv run python scripts/download_yolov8_weights.py --variant visdrone --imgsz 1280
+uv run lowlatcv run --source data/b3d/videos/hwy00.mp4 --display \
+  --detector onnx --weights data/models/yolov8n-visdrone-1280.onnx \
+  --num-classes 10 --imgsz 1280
+```
+
+```bash
+# Best recall (~5 fps) — tile a 1280-export model 2×2 over a 4K frame
+uv run lowlatcv run --source data/b3d/videos/hwy00.mp4 --display \
+  --detector onnx-tiled --weights data/models/yolov8n-visdrone-1280.onnx \
+  --num-classes 10 --tiles 2x2 --fps 0
+```
+
+(`--tile-input-size` auto-snaps to the model's fixed imgsz, so you only need
+to pass it if the model was exported with `dynamic=True`.)
+
+```bash
+# Fast smoke test at 640 (lower recall but ~30 fps; OK for sanity checks)
+uv run python scripts/download_yolov8_weights.py --variant visdrone
 uv run lowlatcv run --source data/b3d/videos/hwy00.mp4 --display \
   --detector onnx --weights data/models/yolov8n-visdrone.onnx \
   --num-classes 10
 ```
 
-With COCO weights instead (for street-view footage):
+With COCO weights instead (only useful for street-view footage):
 
 ```bash
 uv run lowlatcv run --source data/b3d/videos/hwy00.mp4 --display \
