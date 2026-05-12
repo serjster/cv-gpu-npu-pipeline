@@ -14,6 +14,7 @@ from lowlatcv.pipeline.detector import (
     OnnxDetector,
     TiledOnnxDetector,
 )
+from lowlatcv.pipeline.jsonl_export import JsonlExportSink
 from lowlatcv.pipeline.overlay import Overlay
 from lowlatcv.pipeline.preprocess import Preprocess
 from lowlatcv.pipeline.runner import Pipeline
@@ -39,6 +40,7 @@ __all__ = [
     "FileSource",
     "FrameSink",
     "FrameSource",
+    "JsonlExportSink",
     "NullSink",
     "OllamaVLM",
     "OnnxDetector",

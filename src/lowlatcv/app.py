@@ -27,6 +27,7 @@ from lowlatcv.pipeline import tracker as tracker_module
 from lowlatcv.pipeline import vlm as vlm_module
 from lowlatcv.pipeline.async_detector import AsyncDetector
 from lowlatcv.pipeline.detector import TiledOnnxDetector
+from lowlatcv.pipeline.jsonl_export import JsonlExportSink
 from lowlatcv.pipeline.overlay import Overlay
 from lowlatcv.pipeline.preprocess import Preprocess
 from lowlatcv.pipeline.runner import Pipeline
@@ -54,13 +55,15 @@ def build_pipeline(
     frame_limit: int | None = None,
     raw: bool = False,
     pace: bool = False,
+    export_jsonl: Path | None = None,
 ) -> Pipeline:
     """Wire the stage graph.
 
-    Full graph: Source → Preprocess → Detector → Overlay → Sink.
-    ``raw=True``: Source → Sink only — pure decode-and-display passthrough.
-    ``pace=True``: source throttles to SourceConfig.target_fps (or the file's
-    intrinsic FPS) so visual playback runs at real-time; bench leaves it off.
+    Full graph: Source → Preprocess → Detector → Tracker → Caption → Overlay →
+    [JsonlExportSink] → Sink. ``raw=True``: Source → Sink only.
+    ``pace=True``: source throttles to SourceConfig.target_fps for real-time
+    playback. ``export_jsonl``: tap stage writes per-frame detections + tracks
+    to JSONL before the terminal sink.
     """
     source = source_module.from_uri(cfg.source.uri, cfg.source, frame_limit=frame_limit, pace=pace)
     sink = sink_module.from_config(cfg.sink)
@@ -82,7 +85,10 @@ def build_pipeline(
     vlm = vlm_module.from_config(cfg.vlm)
     scheduler = CaptionScheduler(cfg.vlm, caption_store, vlm=vlm)
     overlay = Overlay(cfg.overlay, caption_store=caption_store, caption_chars=cfg.vlm.caption_chars)
-    stages = [source, preprocess, detector, tracker, scheduler, overlay, sink]
+    stages = [source, preprocess, detector, tracker, scheduler, overlay]
+    if export_jsonl is not None:
+        stages.append(JsonlExportSink(export_jsonl))
+    stages.append(sink)
     return Pipeline(stages, tracer, queue_size=cfg.queue_size)
 
 
@@ -92,11 +98,14 @@ async def _drive(
     fmt: str,
     raw: bool = False,
     pace: bool = False,
+    export_jsonl: Path | None = None,
 ) -> str:
     tracer = Tracer()
     reporter = _make_reporter(fmt)
     tracer.subscribe(reporter)
-    pipeline = build_pipeline(cfg, tracer, frame_limit=frame_limit, raw=raw, pace=pace)
+    pipeline = build_pipeline(
+        cfg, tracer, frame_limit=frame_limit, raw=raw, pace=pace, export_jsonl=export_jsonl
+    )
     await pipeline.run()
     return reporter.render()
 
@@ -268,6 +277,9 @@ def run(
         "--tile-refresh-tiles-per-cycle",
         help="how many rotating refresh tiles to add per inference cycle (default 1)",
     ),
+    export_jsonl: Path | None = typer.Option(
+        None, "--export-jsonl", help="per-frame JSONL export path (detections + tracks)"
+    ),
 ) -> None:
     """Run the pipeline end-to-end."""
     cfg = PipelineConfig.load(config)
@@ -312,7 +324,9 @@ def run(
         cfg = dataclasses.replace(cfg, source=dataclasses.replace(cfg.source, target_fps=fps))
         pace = True
     limit = frames if frames > 0 else None
-    report = asyncio.run(_drive(cfg, limit, cfg.metrics.format, raw=raw, pace=pace))
+    report = asyncio.run(
+        _drive(cfg, limit, cfg.metrics.format, raw=raw, pace=pace, export_jsonl=export_jsonl)
+    )
     typer.echo(report)
 
 
@@ -344,6 +358,7 @@ def bench(
     detect_every_n: int | None = typer.Option(None, "--detect-every-n"),
     tile_on_demand: bool = typer.Option(False, "--tile-on-demand"),
     tile_refresh_tiles_per_cycle: int | None = typer.Option(None, "--tile-refresh-tiles-per-cycle"),
+    export_jsonl: Path | None = typer.Option(None, "--export-jsonl"),
 ) -> None:
     """Run benchmark mode and report latency. Sink is forced to null."""
     cfg = PipelineConfig.load(config)
@@ -371,7 +386,7 @@ def bench(
     )
     cfg = _apply_imgsz(cfg, imgsz)
     limit = frames if frames > 0 else None
-    report = asyncio.run(_drive(cfg, limit, report_format))
+    report = asyncio.run(_drive(cfg, limit, report_format, export_jsonl=export_jsonl))
     if report_path is not None:
         report_path.write_text(report)
         typer.echo(f"wrote report → {report_path}")
