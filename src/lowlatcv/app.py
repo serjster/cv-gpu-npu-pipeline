@@ -23,6 +23,7 @@ from lowlatcv.metrics.tracer import Tracer
 from lowlatcv.pipeline import detector as detector_module
 from lowlatcv.pipeline import sink as sink_module
 from lowlatcv.pipeline import source as source_module
+from lowlatcv.pipeline import tracker as tracker_module
 from lowlatcv.pipeline.overlay import Overlay
 from lowlatcv.pipeline.preprocess import Preprocess
 from lowlatcv.pipeline.runner import Pipeline
@@ -62,8 +63,9 @@ def build_pipeline(
         return Pipeline(stages, tracer, queue_size=cfg.queue_size)
     preprocess = Preprocess(cfg.preprocess)
     detector = detector_module.from_config(cfg.detector)
+    tracker = tracker_module.from_config(cfg.tracker)
     overlay = Overlay(cfg.overlay)
-    stages = [source, preprocess, detector, overlay, sink]
+    stages = [source, preprocess, detector, tracker, overlay, sink]
     return Pipeline(stages, tracer, queue_size=cfg.queue_size)
 
 

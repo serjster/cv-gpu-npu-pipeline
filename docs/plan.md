@@ -37,8 +37,8 @@ The Strategy pattern (`Detector`, `VLM`, `FrameSource`, `FrameSink`) keeps the p
 | 1  | [Foundation & scaffolding](plan/phase-1-foundation.md)                 | closed |
 | 2  | [Source & sink (end-to-end skeleton)](plan/phase-2-source-sink.md)     | closed |
 | 3  | [Object detection](plan/phase-3-detection.md)                          | closed |
-| 4  | [Tracking](plan/phase-4-tracking.md)                                   | in-progress |
-| 5  | [VLM async (GPU/ROCm via Ollama)](plan/phase-5-vlm-async.md)           | open   |
+| 4  | [Tracking](plan/phase-4-tracking.md)                                   | closed |
+| 5  | [VLM async (GPU/ROCm via Ollama)](plan/phase-5-vlm-async.md)           | in-progress |
 | 6  | [VLM on NPU via FastFlowLM](plan/phase-6-vlm-npu.md)                   | open   |
 | 7  | [Queryable VLM (user prompts steer focus)](plan/phase-7-query.md)      | open   |
 | 8  | [Dashboard & control UI](plan/phase-8-dashboard.md)                    | open   |

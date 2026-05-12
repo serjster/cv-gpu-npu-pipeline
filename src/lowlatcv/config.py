@@ -45,9 +45,13 @@ class DetectorConfig:
 
 @dataclass(frozen=True, slots=True)
 class TrackerConfig:
+    backend: str = "bytetrack"
     iou_threshold: float = 0.3
     max_age: int = 30
+    lost_age: int = 30
     min_hits: int = 3
+    score_high_threshold: float = 0.5
+    history_size: int = 30
 
 
 @dataclass(frozen=True, slots=True)

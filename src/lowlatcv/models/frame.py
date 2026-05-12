@@ -10,6 +10,7 @@ without surprises.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import StrEnum
 from typing import Any
 
 import numpy as np
@@ -40,6 +41,7 @@ class Frame:
     tensor: NDArray[Any] | None = None
     letterbox: LetterboxMeta | None = None
     detections: tuple[Detection, ...] = ()
+    tracks: tuple[Track, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,6 +51,21 @@ class Detection:
     class_id: int
 
 
+class TrackState(StrEnum):
+    """Lifecycle of a track. Transitions encoded explicitly (State pattern).
+
+    - ``TENTATIVE``: just spawned; needs ``min_hits`` consecutive matches to confirm.
+    - ``ACTIVE``: matched recently; the normal case.
+    - ``LOST``: missed for ``max_age`` consecutive frames but still recoverable.
+    - ``DEAD``: terminal. No longer associated; never rendered; ID never reused.
+    """
+
+    TENTATIVE = "tentative"
+    ACTIVE = "active"
+    LOST = "lost"
+    DEAD = "dead"
+
+
 @dataclass(frozen=True, slots=True)
 class Track:
     track_id: int
@@ -56,4 +73,9 @@ class Track:
     class_id: int
     score: float
     age: int
+    state: TrackState
+    last_seen_frame: int
+    hits: int = 0
+    frames_since_match: int = 0
+    history: tuple[tuple[int, int, int, int], ...] = ()
     last_caption: Caption | None = None

@@ -13,9 +13,11 @@ from lowlatcv.pipeline.runner import Pipeline
 from lowlatcv.pipeline.sink import FileSink, FrameSink, NullSink, SDLDisplaySink
 from lowlatcv.pipeline.source import FileSource, FrameSource, WebcamSource
 from lowlatcv.pipeline.stage import EOF, Stage, StageRunner
+from lowlatcv.pipeline.tracker import ByteTracker, Tracker
 
 __all__ = [
     "EOF",
+    "ByteTracker",
     "CoreMLDetector",
     "Detector",
     "FakeDetector",
@@ -31,5 +33,6 @@ __all__ = [
     "SDLDisplaySink",
     "Stage",
     "StageRunner",
+    "Tracker",
     "WebcamSource",
 ]
