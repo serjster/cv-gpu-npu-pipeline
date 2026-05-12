@@ -50,20 +50,39 @@ def decode_yolov8(
     output: NDArray[Any],
     num_classes: int,
 ) -> tuple[NDArray[np.float32], NDArray[np.float32], NDArray[np.int64]]:
-    """Decode a raw YOLOv8 detection head into ``(boxes_xyxy, scores, class_ids)``.
+    """Decode a raw YOLOv8-style detection head into ``(boxes_xyxy, scores, class_ids)``.
 
-    Accepts shape ``(1, 4 + num_classes, N)`` (canonical YOLOv8 ONNX export) or
-    ``(1, N, 4 + num_classes)``. Coords are in letterboxed pixel space (cx, cy, w, h).
+    Auto-detects the output format:
+
+    1. Anchor-grid (YOLOv8, v11): shape ``(1, 4 + num_classes, N)`` or
+       ``(1, N, 4 + num_classes)``. Boxes are in cxcywh letterboxed pixels;
+       per-anchor class scores are sigmoid-applied. We argmax to pick the
+       winning class.
+    2. NMS-free / one-shot (YOLOv10, YOLO26): shape ``(1, N, 6)`` where each
+       row is ``[x1, y1, x2, y2, score, class_id]`` already in xyxy pixel
+       space and already filtered by the model's internal NMS — we just
+       have to score-threshold and unletterbox downstream.
     """
     out = np.asarray(output, dtype=np.float32)
     if out.ndim != 3 or out.shape[0] != 1:
-        raise ValueError(f"unexpected YOLOv8 output shape: {out.shape}")
+        raise ValueError(f"unexpected detector output shape: {out.shape}")
     arr = out[0]
-    expected = 4 + num_classes
-    if arr.shape[0] == expected:
+    expected_anchor = 4 + num_classes
+
+    # NMS-free / one-shot format
+    if arr.ndim == 2 and arr.shape[1] == 6:
+        boxes_xyxy = arr[:, :4].astype(np.float32, copy=True)
+        scores = arr[:, 4].astype(np.float32, copy=True)
+        class_ids = arr[:, 5].astype(np.int64, copy=True)
+        return boxes_xyxy, scores, class_ids
+
+    if arr.shape[0] == expected_anchor:
         arr = arr.T
-    elif arr.shape[1] != expected:
-        raise ValueError(f"unexpected YOLOv8 channel dim: {arr.shape}, expected last={expected}")
+    elif arr.shape[1] != expected_anchor:
+        raise ValueError(
+            f"unexpected detector channel dim: {arr.shape}, "
+            f"expected last={expected_anchor} (anchor-grid) or 6 (NMS-free)"
+        )
     boxes_cxcywh = arr[:, :4]
     cls_scores = arr[:, 4 : 4 + num_classes]
     class_ids = cls_scores.argmax(axis=1).astype(np.int64)

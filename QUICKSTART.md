@@ -53,9 +53,14 @@ GT image used in §10 (1920×1080, 327 cars):
 | yolov11n       | `erbayat/yolov11n-visdrone`      | 0.65         | 72     |
 | yolov12s       | `jadenvr/YOLOv12s-VisDrone`      | not measured | —      |
 | yolov10l       | `dalietng/yolov10l-visdrone`     | not measured | —      |
+| yolo26m        | `kailunw/visdrone-yolo26m`       | 0.23 ⚠       | 185    |
 
 Take-away: at this scale the v11n upgrade is +3% F1 for +36% latency. Stick
-with v8n unless you have the headroom. To try v11n manually:
+with v8n unless you have the headroom. **YOLO26** (Ultralytics, Jan 2026) is
+real and the decoder supports its NMS-free `(1, N, 6)` output — but the only
+public VisDrone-trained v26 weights (`kailunw/visdrone-yolo26m`) are
+under-tuned and score below v8n. Would need to fine-tune properly to get a
+fair comparison. To try v11n manually:
 
 ```bash
 hf download erbayat/yolov11n-visdrone best.pt --local-dir data/models/yolov11n-visdrone
