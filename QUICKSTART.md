@@ -187,7 +187,39 @@ uv run lowlatcv run --source data/b3d/videos/hwy00.mp4 --display \
   --num-classes 10 --imgsz 1280
 ```
 
-## 10. Config file overlay
+## 10. Objective accuracy check (VisDrone GT)
+
+Eyeballing detection quality is unreliable. `scripts/eval_detector.py` runs
+the configured detector over a labeled VisDrone image and prints per-class
+precision / recall / F1 vs ground truth.
+
+```bash
+# Download a few labeled samples (113 MB labels file + chosen images)
+mkdir -p data/visdrone-sample
+hf download Voxel51/VisDrone2019-DET --repo-type dataset \
+  metadata.json samples.json \
+  data/0000126_11844_d_0000130.jpg \
+  --local-dir data/visdrone-sample
+
+# Single-tile 640
+uv run python scripts/eval_detector.py \
+  --samples-json data/visdrone-sample/samples.json \
+  --image data/visdrone-sample/data/0000126_11844_d_0000130.jpg \
+  --weights data/models/yolov8n-visdrone.onnx --num-classes 10 \
+  --save-render /tmp/eval_single.jpg
+
+# Tiled 3x3 (much higher recall on aerial scale)
+uv run python scripts/eval_detector.py \
+  --samples-json data/visdrone-sample/samples.json \
+  --image data/visdrone-sample/data/0000126_11844_d_0000130.jpg \
+  --weights data/models/yolov8n-visdrone.onnx --num-classes 10 \
+  --tiles 3x3 --save-render /tmp/eval_tiled3x3.jpg
+```
+
+`--save-render` writes an annotated JPEG with GT in red and predictions in
+green for visual sanity-check.
+
+## 11. Config file overlay
 
 Everything above can be set in YAML and loaded once, instead of long flags:
 
