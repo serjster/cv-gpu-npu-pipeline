@@ -5,6 +5,6 @@ Re-exports the frozen+slots dataclasses (``Frame``, ``Detection``, ``Track``,
 """
 
 from lowlatcv.models.caption import Caption, CaptionRequest
-from lowlatcv.models.frame import Detection, Frame, Track
+from lowlatcv.models.frame import Detection, Frame, LetterboxMeta, Track
 
-__all__ = ["Caption", "CaptionRequest", "Detection", "Frame", "Track"]
+__all__ = ["Caption", "CaptionRequest", "Detection", "Frame", "LetterboxMeta", "Track"]

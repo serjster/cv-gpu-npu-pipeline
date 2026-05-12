@@ -6,6 +6,8 @@ the ``Pipeline`` Facade, and the concrete ``FrameSource`` / ``Preprocess`` /
 as later phases plug them in.
 """
 
+from lowlatcv.pipeline.detector import CoreMLDetector, Detector, FakeDetector, OnnxDetector
+from lowlatcv.pipeline.overlay import Overlay
 from lowlatcv.pipeline.preprocess import Preprocess
 from lowlatcv.pipeline.runner import Pipeline
 from lowlatcv.pipeline.sink import DisplaySink, FileSink, FrameSink, NullSink
@@ -14,12 +16,17 @@ from lowlatcv.pipeline.stage import EOF, Stage, StageRunner
 
 __all__ = [
     "EOF",
+    "CoreMLDetector",
+    "Detector",
     "DisplaySink",
+    "FakeDetector",
     "FileSink",
     "FileSource",
     "FrameSink",
     "FrameSource",
     "NullSink",
+    "OnnxDetector",
+    "Overlay",
     "Pipeline",
     "Preprocess",
     "Stage",

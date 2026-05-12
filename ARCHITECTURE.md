@@ -18,10 +18,10 @@ names**, and the same orchestrator code. Only the per-stage backends differ, sel
 Strategy pattern (`Detector`, `VLM`, `FrameSource`, `FrameSink`). A change is only complete when it works on both
 profiles — or when the work is explicitly scoped to one and the gap on the other is documented in the phase doc.
 
-| Profile             | OS              | Detector backends                                                              | VLM backends                              | Accelerator                              |
-|---------------------|-----------------|--------------------------------------------------------------------------------|-------------------------------------------|------------------------------------------|
-| **macOS + Apple Si**| macOS 14+       | CoreML (`.mlpackage`), ONNX Runtime (`CoreMLExecutionProvider`, `CPU`)         | Ollama (Metal), CoreML-converted VLM      | M-series GPU (Metal/MPS) + Neural Engine |
-| **Linux + AMD**     | Arch / Ubuntu   | ONNX Runtime (`ROCMExecutionProvider`, `MIGraphXExecutionProvider`, `CPU`)     | Ollama (ROCm), FastFlowLM (XDNA NPU)      | Radeon GPU (ROCm) + Ryzen AI NPU (XDNA)  |
+| Profile              | OS            | Detector backends                                                          | VLM backends                         | Accelerator                              |
+|----------------------|---------------|----------------------------------------------------------------------------|--------------------------------------|------------------------------------------|
+| **macOS + Apple Si** | macOS 14+     | CoreML (`.mlpackage`), ONNX Runtime (`CoreMLExecutionProvider`, `CPU`)     | Ollama (Metal), CoreML-converted VLM | M-series GPU (Metal/MPS) + Neural Engine |
+| **Linux + AMD**      | Arch / Ubuntu | ONNX Runtime (`ROCMExecutionProvider`, `MIGraphXExecutionProvider`, `CPU`) | Ollama (ROCm), FastFlowLM (XDNA NPU) | Radeon GPU (ROCm) + Ryzen AI NPU (XDNA)  |
 
 Neither profile replaces the other. The FPGA target (AMD Versal VEK385) sits behind both — both host pipelines are
 *reference implementations* and a comparison rig for the FPGA bring-up.
@@ -101,15 +101,15 @@ Resize and colour-convert to the detector's input tensor shape and dtype.
 
 Runs the bounding-box detector. Returns zero or more `Detection`s per frame.
 
-| Property              | Value                                                                                                                                |
-|-----------------------|--------------------------------------------------------------------------------------------------------------------------------------|
-| Input                 | preprocessed `Frame`                                                                                                                 |
-| Output                | `Frame` + `list[Detection]`                                                                                                          |
-| Backends (macOS)      | CoreML (`.mlpackage`), ONNX Runtime (`CoreMLExecutionProvider`, `CPU`), Ultralytics (`YOLOv8/11n` etc.)                              |
-| Backends (Linux/AMD)  | ONNX Runtime (`ROCMExecutionProvider`, `MIGraphXExecutionProvider`, `CPU`), Ultralytics with `device='cuda'` via ROCm                |
-| Selection             | via `DetectorConfig.backend` + active runtime profile                                                                                |
-| Threading             | CPU/GPU-bound, executor thread                                                                                                       |
-| FPGA equivalent       | YOLO-class model compiled to AIE-ML v2 array; INT8 weights in URAM, activations in BRAM                                              |
+| Property             | Value                                                                                                                 |
+|----------------------|-----------------------------------------------------------------------------------------------------------------------|
+| Input                | preprocessed `Frame`                                                                                                  |
+| Output               | `Frame` + `list[Detection]`                                                                                           |
+| Backends (macOS)     | CoreML (`.mlpackage`), ONNX Runtime (`CoreMLExecutionProvider`, `CPU`), Ultralytics (`YOLOv8/11n` etc.)               |
+| Backends (Linux/AMD) | ONNX Runtime (`ROCMExecutionProvider`, `MIGraphXExecutionProvider`, `CPU`), Ultralytics with `device='cuda'` via ROCm |
+| Selection            | via `DetectorConfig.backend` + active runtime profile                                                                 |
+| Threading            | CPU/GPU-bound, executor thread                                                                                        |
+| FPGA equivalent      | YOLO-class model compiled to AIE-ML v2 array; INT8 weights in URAM, activations in BRAM                               |
 
 `Detection`:
 
@@ -151,17 +151,17 @@ class Track:
 
 Generates a natural-language description for a track. The slow stage. **Must not block per-frame work.**
 
-| Property              | Value                                                                                                                |
-|-----------------------|----------------------------------------------------------------------------------------------------------------------|
-| Input                 | `CaptionRequest(track_id, crop, frame_id)` (own queue)                                                               |
-| Output                | `Caption(track_id, text, model, ts_ns)` posted to a result map                                                       |
-| Schedule              | once on first detection of a new track; optional refresh every `vlm.refresh_seconds` per track                       |
-| Backends (macOS)      | Ollama (Metal) running LLaVA / SmolVLM / Florence-2 class models; optional CoreML-converted VLM for ANE              |
-| Backends (Linux/AMD)  | Ollama (ROCm) on the Radeon GPU; FastFlowLM on the Ryzen AI XDNA NPU; `transformers` + `torch` on ROCm as a fallback |
-| Concurrency           | dedicated worker (thread or process), single in-flight request at a time by default                                  |
-| Drop policy           | if the request queue fills, drop **oldest** new-track requests last so first-seen requests are preserved             |
-| Threading             | CPU/GPU/NPU-bound, dedicated executor / process pool                                                                 |
-| FPGA equivalent       | dedicated AIE-ML partition or off-chip accelerator (PCIe to host); single-instance, multiplexed across tracks        |
+| Property             | Value                                                                                                                |
+|----------------------|----------------------------------------------------------------------------------------------------------------------|
+| Input                | `CaptionRequest(track_id, crop, frame_id)` (own queue)                                                               |
+| Output               | `Caption(track_id, text, model, ts_ns)` posted to a result map                                                       |
+| Schedule             | once on first detection of a new track; optional refresh every `vlm.refresh_seconds` per track                       |
+| Backends (macOS)     | Ollama (Metal) running LLaVA / SmolVLM / Florence-2 class models; optional CoreML-converted VLM for ANE              |
+| Backends (Linux/AMD) | Ollama (ROCm) on the Radeon GPU; FastFlowLM on the Ryzen AI XDNA NPU; `transformers` + `torch` on ROCm as a fallback |
+| Concurrency          | dedicated worker (thread or process), single in-flight request at a time by default                                  |
+| Drop policy          | if the request queue fills, drop **oldest** new-track requests last so first-seen requests are preserved             |
+| Threading            | CPU/GPU/NPU-bound, dedicated executor / process pool                                                                 |
+| FPGA equivalent      | dedicated AIE-ML partition or off-chip accelerator (PCIe to host); single-instance, multiplexed across tracks        |
 
 The tracker emits a `CaptionRequest` the first time it sees a track. The VLM worker processes requests serially and
 posts `Caption` results into a shared `dict[track_id, Caption]` consulted by the overlay stage.

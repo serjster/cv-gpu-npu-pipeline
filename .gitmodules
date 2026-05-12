@@ -4,3 +4,6 @@
 [submodule "docs/research/fastflowlm/mlir-aie"]
 	path = docs/research/fastflowlm/mlir-aie
 	url = org-3189299@github.com:Xilinx/mlir-aie.git
+[submodule "data/b3d"]
+	path = data/b3d
+	url = git@github.com:b3d-project/b3d.git

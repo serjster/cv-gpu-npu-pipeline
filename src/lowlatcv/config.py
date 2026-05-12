@@ -34,11 +34,13 @@ class PreprocessConfig:
 
 @dataclass(frozen=True, slots=True)
 class DetectorConfig:
-    backend: str = "stub"
+    backend: str = "fake"
     weights: str | None = None
     score_threshold: float = 0.25
     nms_threshold: float = 0.45
     max_detections: int = 100
+    execution_provider: str | None = None
+    num_classes: int = 80
 
 
 @dataclass(frozen=True, slots=True)

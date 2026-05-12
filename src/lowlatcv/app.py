@@ -20,8 +20,10 @@ import typer
 from lowlatcv.config import PipelineConfig, SinkConfig
 from lowlatcv.metrics.reporter import CSVReporter, JSONReporter, Reporter, TableReporter
 from lowlatcv.metrics.tracer import Tracer
+from lowlatcv.pipeline import detector as detector_module
 from lowlatcv.pipeline import sink as sink_module
 from lowlatcv.pipeline import source as source_module
+from lowlatcv.pipeline.overlay import Overlay
 from lowlatcv.pipeline.preprocess import Preprocess
 from lowlatcv.pipeline.runner import Pipeline
 
@@ -44,11 +46,13 @@ def build_pipeline(
     tracer: Tracer,
     frame_limit: int | None = None,
 ) -> Pipeline:
-    """Wire Source → Preprocess → Sink. Real CV stages land in phases 3+."""
+    """Wire Source → Preprocess → Detector → Overlay → Sink."""
     source = source_module.from_uri(cfg.source.uri, cfg.source, frame_limit=frame_limit)
     preprocess = Preprocess(cfg.preprocess)
+    detector = detector_module.from_config(cfg.detector)
+    overlay = Overlay(cfg.overlay)
     sink = sink_module.from_config(cfg.sink)
-    stages: list[Any] = [source, preprocess, sink]
+    stages: list[Any] = [source, preprocess, detector, overlay, sink]
     return Pipeline(stages, tracer, queue_size=cfg.queue_size)
 
 
@@ -61,6 +65,28 @@ async def _drive(cfg: PipelineConfig, frame_limit: int | None, fmt: str) -> str:
     return reporter.render()
 
 
+def _apply_detector_overrides(
+    cfg: PipelineConfig,
+    backend: str | None,
+    weights: Path | None,
+    score_threshold: float | None,
+    iou_threshold: float | None,
+    execution_provider: str | None,
+) -> PipelineConfig:
+    det = cfg.detector
+    if backend is not None:
+        det = dataclasses.replace(det, backend=backend)
+    if weights is not None:
+        det = dataclasses.replace(det, weights=str(weights))
+    if score_threshold is not None:
+        det = dataclasses.replace(det, score_threshold=score_threshold)
+    if iou_threshold is not None:
+        det = dataclasses.replace(det, nms_threshold=iou_threshold)
+    if execution_provider is not None:
+        det = dataclasses.replace(det, execution_provider=execution_provider)
+    return dataclasses.replace(cfg, detector=det)
+
+
 @app.command()
 def run(
     source: str | None = typer.Option(None, help="video source URI / device index / RTSP URL"),
@@ -69,6 +95,15 @@ def run(
     display: bool = typer.Option(False, help="show display window"),
     sink: str | None = typer.Option(None, help="sink kind: display / null / file"),
     output: Path | None = typer.Option(None, help="file sink path"),
+    detector: str | None = typer.Option(None, help="detector backend: fake / onnx / coreml"),
+    weights: Path | None = typer.Option(None, help="detector weights path"),
+    score_threshold: float | None = typer.Option(None, "--score-threshold"),
+    iou_threshold: float | None = typer.Option(None, "--iou-threshold"),
+    execution_provider: str | None = typer.Option(
+        None,
+        "--execution-provider",
+        help="onnxruntime EP, e.g. CoreMLExecutionProvider / ROCMExecutionProvider / CPUExecutionProvider",
+    ),
 ) -> None:
     """Run the pipeline end-to-end."""
     cfg = PipelineConfig.load(config)
@@ -82,6 +117,9 @@ def run(
     if output is not None:
         sink_cfg = dataclasses.replace(sink_cfg, output=str(output))
     cfg = dataclasses.replace(cfg, sink=sink_cfg)
+    cfg = _apply_detector_overrides(
+        cfg, detector, weights, score_threshold, iou_threshold, execution_provider
+    )
     limit = frames if frames > 0 else None
     report = asyncio.run(_drive(cfg, limit, cfg.metrics.format))
     typer.echo(report)
@@ -94,12 +132,20 @@ def bench(
     frames: int = typer.Option(1000, help="benchmark over N frames"),
     report_format: str = typer.Option("table", "--report-format"),
     report_path: Path | None = typer.Option(None, "--report-path"),
+    detector: str | None = typer.Option(None, help="detector backend: fake / onnx / coreml"),
+    weights: Path | None = typer.Option(None, help="detector weights path"),
+    score_threshold: float | None = typer.Option(None, "--score-threshold"),
+    iou_threshold: float | None = typer.Option(None, "--iou-threshold"),
+    execution_provider: str | None = typer.Option(None, "--execution-provider"),
 ) -> None:
     """Run benchmark mode and report latency. Sink is forced to null."""
     cfg = PipelineConfig.load(config)
     if source is not None:
         cfg = dataclasses.replace(cfg, source=dataclasses.replace(cfg.source, uri=source))
     cfg = dataclasses.replace(cfg, sink=SinkConfig(kind="null"))
+    cfg = _apply_detector_overrides(
+        cfg, detector, weights, score_threshold, iou_threshold, execution_provider
+    )
     limit = frames if frames > 0 else None
     report = asyncio.run(_drive(cfg, limit, report_format))
     if report_path is not None:

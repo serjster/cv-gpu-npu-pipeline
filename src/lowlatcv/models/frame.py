@@ -19,11 +19,27 @@ from lowlatcv.models.caption import Caption
 
 
 @dataclass(frozen=True, slots=True)
+class LetterboxMeta:
+    """Parameters of a letterbox transform, needed to map detector boxes
+    back from preprocessed coords into the original frame."""
+
+    orig_h: int
+    orig_w: int
+    canvas_h: int
+    canvas_w: int
+    pad_top: int
+    pad_left: int
+    scale: float
+
+
+@dataclass(frozen=True, slots=True)
 class Frame:
     id: int
     timestamp_ns: int
     image: NDArray[np.uint8]
     tensor: NDArray[Any] | None = None
+    letterbox: LetterboxMeta | None = None
+    detections: tuple[Detection, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

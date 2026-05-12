@@ -19,7 +19,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from lowlatcv.config import PreprocessConfig
-from lowlatcv.models.frame import Frame
+from lowlatcv.models.frame import Frame, LetterboxMeta
 
 log = logging.getLogger(__name__)
 
@@ -39,13 +39,13 @@ class Preprocess:
 
     async def process(self, item: Frame) -> Frame:
         loop = asyncio.get_running_loop()
-        tensor = await loop.run_in_executor(None, self._transform, item.image)
-        return dataclasses.replace(item, tensor=tensor)
+        tensor, meta = await loop.run_in_executor(None, self._transform, item.image)
+        return dataclasses.replace(item, tensor=tensor, letterbox=meta)
 
     async def teardown(self) -> None: ...
 
-    def _transform(self, image: NDArray[np.uint8]) -> NDArray[Any]:
-        canvas = _letterbox(image, target_h=self._cfg.height, target_w=self._cfg.width)
+    def _transform(self, image: NDArray[np.uint8]) -> tuple[NDArray[Any], LetterboxMeta]:
+        canvas, meta = _letterbox(image, target_h=self._cfg.height, target_w=self._cfg.width)
         rgb = cv2.cvtColor(canvas, cv2.COLOR_BGR2RGB)
         arr: NDArray[Any] = rgb.astype(np.float32, copy=False)
         if self._cfg.normalize:
@@ -53,10 +53,14 @@ class Preprocess:
         if self._cfg.layout == "NCHW":
             arr = np.transpose(arr, (2, 0, 1))
         arr = np.expand_dims(arr, 0)
-        return np.ascontiguousarray(arr)
+        return np.ascontiguousarray(arr), meta
 
 
-def _letterbox(image: NDArray[np.uint8], target_h: int, target_w: int) -> NDArray[np.uint8]:
+def _letterbox(
+    image: NDArray[np.uint8],
+    target_h: int,
+    target_w: int,
+) -> tuple[NDArray[np.uint8], LetterboxMeta]:
     h, w = image.shape[:2]
     scale = min(target_w / w, target_h / h)
     new_w = max(1, int(round(w * scale)))
@@ -66,4 +70,13 @@ def _letterbox(image: NDArray[np.uint8], target_h: int, target_w: int) -> NDArra
     top = (target_h - new_h) // 2
     left = (target_w - new_w) // 2
     canvas[top : top + new_h, left : left + new_w] = resized
-    return canvas
+    meta = LetterboxMeta(
+        orig_h=h,
+        orig_w=w,
+        canvas_h=target_h,
+        canvas_w=target_w,
+        pad_top=top,
+        pad_left=left,
+        scale=float(scale),
+    )
+    return canvas, meta
