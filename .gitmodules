@@ -1,0 +1,6 @@
+[submodule "docs/research/fastflowlm/FastFlowLM"]
+	path = docs/research/fastflowlm/FastFlowLM
+	url = git@github.com:FastFlowLM/FastFlowLM.git
+[submodule "docs/research/fastflowlm/mlir-aie"]
+	path = docs/research/fastflowlm/mlir-aie
+	url = org-3189299@github.com:Xilinx/mlir-aie.git
