@@ -43,6 +43,25 @@ When the user expresses uncertainty, asks "what do you think", "do you have any 
 2. Wait for the user to approve before making any file changes
 3. Never edit files during a brainstorming/discussion phase
 
+### Keep QUICKSTART in sync
+
+`QUICKSTART.md` is the single curated list of copy-pasteable CLI commands.
+Any commit that changes the CLI surface in `src/lowlatcv/app.py` (adds /
+renames / removes a flag, changes a default that affects an example, adds
+a new detector / sink / VLM backend, adds a new subcommand) **must** update
+`QUICKSTART.md` in the same commit:
+
+1. Update or add the matching example under the relevant section.
+2. Update the "Cheat sheet of every CLI flag" table at the bottom.
+3. If a new helper script lands under `scripts/`, document it under §2 or a
+   new numbered section as appropriate.
+4. If a backend stops working (e.g. dep dropped), remove its example rather
+   than leaving a stale one.
+
+The rule of thumb: if a fresh contributor reads only `QUICKSTART.md`, can
+they run every supported mode without reading the source? If not, the file
+is out of date.
+
 ### Self-Improvement
 
 When a tool, skill, or agent fails or produces suboptimal results, and the cause is in the tool/skill/agent itself (not user input or environment):

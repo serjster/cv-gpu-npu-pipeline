@@ -1,0 +1,238 @@
+# Quickstart
+
+Copy-pasteable CLI commands for every supported mode. Keep this in sync with
+`src/lowlatcv/app.py` — when a flag is added, renamed, or removed, update this
+file in the same commit (see `CLAUDE.md` → *Keep QUICKSTART in sync*).
+
+The example source is `data/b3d/videos/hwy00.mp4` (4K aerial highway). Swap in
+your own clip / device anywhere it appears.
+
+---
+
+## 1. Setup
+
+```bash
+# One-off: install dependencies into .venv
+uv sync
+
+# Lint / typecheck / test (after any change)
+uv run ruff check src tests
+uv run ruff format src tests
+uv run mypy src
+uv run pytest -q
+```
+
+## 2. Get YOLOv8 weights
+
+```bash
+# VisDrone-trained (recommended for aerial / drone footage — 10 classes:
+# pedestrian, people, bicycle, car, van, truck, tricycle, awning-tricycle,
+# bus, motor)
+uv run python scripts/download_yolov8_weights.py --variant visdrone
+
+# Vanilla COCO (80 classes, street-view trained — works for normal camera
+# angles; struggles with aerial scale)
+uv run python scripts/download_yolov8_weights.py --variant coco
+
+# Larger / more accurate VisDrone
+uv run python scripts/download_yolov8_weights.py --variant visdrone-s --imgsz 1280
+```
+
+Weights land in `data/models/`. The script also prints the right `lowlatcv`
+command for each variant.
+
+## 3. Raw playback (decode + GPU display only)
+
+Baseline for "is the framework adding overhead?" — no preprocess, no
+detector, no overlay. Source → SDLDisplaySink (Metal on macOS, Vulkan/GL on
+Linux). Paces to the file's intrinsic FPS by default.
+
+```bash
+uv run lowlatcv run --raw --source data/b3d/videos/hwy00.mp4 --display
+```
+
+Useful flags:
+
+- `--fps N` override pace (`0` disables, source goes as fast as decode allows)
+- `--vsync` enable display vsync
+- `--sink null` headless decode-only — useful to isolate decoder cost
+
+## 4. Detection + tracking, no captions
+
+Single 640 inference, VisDrone weights. Detector ~12 ms p50 on Apple Silicon
+ANE. Real-time on hwy00.
+
+```bash
+uv run lowlatcv run --source data/b3d/videos/hwy00.mp4 --display \
+  --detector onnx --weights data/models/yolov8n-visdrone.onnx \
+  --num-classes 10
+```
+
+With COCO weights instead (for street-view footage):
+
+```bash
+uv run lowlatcv run --source data/b3d/videos/hwy00.mp4 --display \
+  --detector onnx --weights data/models/yolov8n.onnx \
+  --num-classes 80
+```
+
+Tune detection thresholds:
+
+```bash
+... --score-threshold 0.30 --iou-threshold 0.50
+```
+
+Force a specific ONNX Runtime execution provider (auto-picked by default):
+
+```bash
+... --execution-provider CoreMLExecutionProvider     # macOS Apple Si
+... --execution-provider ROCMExecutionProvider        # Linux + AMD
+... --execution-provider MIGraphXExecutionProvider    # Linux + AMD (compiled graph)
+... --execution-provider CPUExecutionProvider         # fallback
+```
+
+## 5. Tiled detection (SAHI-style, for tiny objects)
+
+Slice the frame into ROWS×COLS overlapping tiles, run the detector on each,
+merge with global NMS. Much higher recall on aerial / drone footage; ~N×N
+slower than single-tile.
+
+```bash
+uv run lowlatcv run --source data/b3d/videos/hwy00.mp4 --display \
+  --detector onnx-tiled --weights data/models/yolov8n-visdrone.onnx \
+  --num-classes 10 \
+  --tiles 3x3 --tile-overlap 0.2 --tile-input-size 640 \
+  --fps 0
+```
+
+`--fps 0` removes source pacing — the tiled detector (~140 ms / 7 fps) sets
+the rate naturally via back-pressure.
+
+## 6. + VLM captions (Ollama)
+
+Needs a local Ollama server with the model pulled:
+
+```bash
+ollama pull moondream
+ollama serve   # (or already running)
+```
+
+Then:
+
+```bash
+uv run lowlatcv run --source data/b3d/videos/hwy00.mp4 --display \
+  --detector onnx --weights data/models/yolov8n-visdrone.onnx \
+  --num-classes 10 \
+  --vlm ollama --vlm-model moondream \
+  --vlm-cooldown 3 --vlm-rate 1
+```
+
+VLM runs **off** the critical path on a worker thread. Captions appear under
+each tracked box every few seconds.
+
+VLM flags:
+
+- `--vlm fake|ollama|none`
+- `--vlm-model <ollama-model>` e.g. `moondream`, `llava`, `qwen2-vl`
+- `--vlm-host http://localhost:11434`
+- `--vlm-prompt "Describe ..."`
+- `--vlm-cooldown SECONDS` — per-track refresh interval
+- `--vlm-rate HZ` — global rate limit (0 = unlimited)
+- `--vlm-fake-latency SECONDS` — artificial latency on FakeVLM for the
+  "no-impact" proof
+
+## 7. Benchmark mode (no display, latency report)
+
+Always uses NullSink. Detector / tracker / VLM all selectable identically.
+
+```bash
+# Just decode + null sink — baseline source cost
+uv run lowlatcv bench --source data/b3d/videos/hwy00.mp4 --frames 1000
+
+# Full pipeline with VisDrone weights
+uv run lowlatcv bench --source data/b3d/videos/hwy00.mp4 --frames 200 \
+  --detector onnx --weights data/models/yolov8n-visdrone.onnx --num-classes 10
+
+# Tiled bench
+uv run lowlatcv bench --source data/b3d/videos/hwy00.mp4 --frames 100 \
+  --detector onnx-tiled --weights data/models/yolov8n-visdrone.onnx \
+  --num-classes 10 --tiles 3x3
+
+# Prove VLM does not block the critical path (1 s artificial latency)
+uv run lowlatcv bench --source data/b3d/videos/hwy00.mp4 --frames 90 \
+  --detector fake --vlm fake --vlm-fake-latency 1.0 --vlm-rate 0 --vlm-cooldown 0.1
+
+# JSON output for diffing across runs / hosts / FPGA bring-up
+uv run lowlatcv bench --source data/b3d/videos/hwy00.mp4 --frames 1000 \
+  --report-format json --report-path bench/macos-visdrone.json
+```
+
+## 8. Webcam / RTSP / network sources
+
+```bash
+uv run lowlatcv run --source webcam:0 --display
+uv run lowlatcv run --source 0 --display              # bare digit also = webcam
+uv run lowlatcv run --source rtsp://cam.local/stream --display
+uv run lowlatcv run --source file:///abs/path/clip.mp4 --display
+```
+
+## 9. Imgsz override
+
+If you exported ONNX at a non-640 size, match it with `--imgsz`:
+
+```bash
+uv run python scripts/download_yolov8_weights.py --variant visdrone --imgsz 1280
+uv run lowlatcv run --source data/b3d/videos/hwy00.mp4 --display \
+  --detector onnx --weights data/models/yolov8n-visdrone-1280.onnx \
+  --num-classes 10 --imgsz 1280
+```
+
+## 10. Config file overlay
+
+Everything above can be set in YAML and loaded once, instead of long flags:
+
+```bash
+uv run lowlatcv run --config configs/hwy00-visdrone.yaml
+```
+
+Layout: keys mirror `PipelineConfig` (`source`, `preprocess`, `detector`,
+`tracker`, `vlm`, `overlay`, `sink`, `metrics`). Env overrides win over YAML:
+`LOWLATCV_DETECTOR__SCORE_THRESHOLD=0.35`.
+
+---
+
+## Cheat sheet of every CLI flag
+
+Built from `src/lowlatcv/app.py`. Re-run `uv run lowlatcv run --help` for the
+authoritative list.
+
+| Flag                       | Mode  | Notes                                             |
+|----------------------------|-------|---------------------------------------------------|
+| `--source URI`             | both  | file path, `webcam:N`, `N`, `rtsp://…`, `file://…`|
+| `--config PATH`            | both  | YAML overlay                                      |
+| `--frames N`               | both  | `run`: 0 = until EOF; `bench`: 1000 default       |
+| `--display`                | run   | force `SinkConfig.kind=display`                   |
+| `--sink display\|null\|file` | run | sink kind override                                |
+| `--output PATH`            | run   | file sink path                                    |
+| `--fps N`                  | run   | source pacing Hz; 0 disables                      |
+| `--vsync`                  | run   | display vsync                                     |
+| `--raw`                    | run   | Source → Sink only                                |
+| `--imgsz N`                | both  | square preprocess input size                      |
+| `--detector fake\|onnx\|onnx-tiled\|coreml` | both | detector backend           |
+| `--weights PATH`           | both  | model file                                        |
+| `--num-classes N`          | both  | COCO=80, VisDrone=10                              |
+| `--score-threshold X`      | both  | detection confidence floor                        |
+| `--iou-threshold X`        | both  | NMS IoU                                           |
+| `--execution-provider EP`  | both  | ONNX Runtime EP override                          |
+| `--tiles ROWSxCOLS`        | both  | tiled inference grid                              |
+| `--tile-overlap X`         | both  | fractional overlap [0, 0.95)                      |
+| `--tile-input-size N`      | both  | per-tile letterbox target                         |
+| `--vlm fake\|ollama\|none` | both  | VLM backend                                       |
+| `--vlm-model NAME`         | both  | Ollama model name                                 |
+| `--vlm-host URL`           | both  | Ollama base URL                                   |
+| `--vlm-prompt TEXT`        | both  | per-track prompt                                  |
+| `--vlm-cooldown SECONDS`   | both  | per-track refresh interval                        |
+| `--vlm-rate HZ`            | both  | global rate limit                                 |
+| `--vlm-fake-latency S`     | both  | FakeVLM synthetic latency                         |
+| `--report-format table\|json\|csv` | bench |                                           |
+| `--report-path PATH`       | bench | write report to file                              |
