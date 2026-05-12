@@ -37,48 +37,71 @@ class Tracker(Protocol):
 
 
 class _Kalman2D:
-    """Constant-velocity Kalman filter on an axis-aligned bbox.
+    """Position-only constant-velocity Kalman filter on an axis-aligned bbox.
 
-    State vector: ``[cx, cy, w, h, vx, vy, vw, vh]`` (8-state). Observation:
-    ``[cx, cy, w, h]`` (4-d). Process / measurement covariances scaled by
-    the box scale ``h`` so motion uncertainty is proportional to object size
-    (classic DeepSORT / SORT trick — prevents tiny boxes from getting
-    drowned by big residuals).
+    State vector: ``[cx, cy, w, h, vx, vy]`` (6-state). Observation:
+    ``[cx, cy, w, h]`` (4-d). The previous 8-state version included
+    velocities for ``w`` and ``h`` — that turns out to be a bad fit for
+    aerial / top-down footage where box size is essentially constant
+    between detections, and the filter would learn spurious size-velocity
+    from noisy detections and then keep growing the box across LOST
+    frames. Width / height are observed directly with no integration.
+
+    Process and measurement covariances are scaled by box height so motion
+    uncertainty is proportional to object size (classic SORT/DeepSORT
+    trick). Initial velocity variance is moderate (100, not 1e4) so the
+    filter doesn't over-trust the first noisy measurement and let velocity
+    spike.
+
+    Velocity magnitude is clamped after each predict to keep a track from
+    flying off when it has been LOST for many frames. ``freeze_velocity()``
+    is called by the tracker when a lane transitions to LOST so the
+    extrapolation stays put rather than running away.
     """
 
-    __slots__ = ("x", "P", "_F", "_H", "_Q_scale", "_R_scale")
+    __slots__ = ("x", "P", "_F", "_H", "_Q_scale", "_R_scale", "_max_speed_px")
 
-    def __init__(self, cx: float, cy: float, w: float, h: float) -> None:
-        self.x: NDArray[np.float64] = np.array([cx, cy, w, h, 0.0, 0.0, 0.0, 0.0], dtype=np.float64)
-        # initial state covariance — large for velocities, smaller for position
-        self.P: NDArray[np.float64] = np.diag([10.0, 10.0, 10.0, 10.0, 1e4, 1e4, 1e4, 1e4])
-        # constant-velocity transition
-        self._F: NDArray[np.float64] = np.eye(8, dtype=np.float64)
-        for i in range(4):
-            self._F[i, i + 4] = 1.0
-        # observation matrix: cx, cy, w, h directly observed
-        self._H: NDArray[np.float64] = np.zeros((4, 8), dtype=np.float64)
+    def __init__(
+        self,
+        cx: float,
+        cy: float,
+        w: float,
+        h: float,
+        max_speed_px: float = 100.0,
+    ) -> None:
+        self.x: NDArray[np.float64] = np.array(
+            [cx, cy, w, h, 0.0, 0.0], dtype=np.float64
+        )
+        # position uncertainty moderate, velocity uncertainty bounded (was 1e4)
+        # so the filter doesn't latch onto the first noisy measurement and
+        # invent a velocity that compounds.
+        self.P: NDArray[np.float64] = np.diag([10.0, 10.0, 10.0, 10.0, 100.0, 100.0])
+        # transition: cx += vx, cy += vy; w, h held constant.
+        self._F: NDArray[np.float64] = np.eye(6, dtype=np.float64)
+        self._F[0, 4] = 1.0
+        self._F[1, 5] = 1.0
+        # observation matrix: cx, cy, w, h directly observed (no velocity obs).
+        self._H: NDArray[np.float64] = np.zeros((4, 6), dtype=np.float64)
         for i in range(4):
             self._H[i, i] = 1.0
-        # noise scales (multiplied by max(h, 1) at update time)
         self._Q_scale: float = 1.0 / 20.0
         self._R_scale: float = 1.0 / 20.0
+        self._max_speed_px: float = max_speed_px
 
     def predict(self) -> None:
         self.x = self._F @ self.x
+        # clamp velocity magnitude — prevents runaway extrapolation under
+        # long LOST gaps with no measurement to correct.
+        speed = float(np.hypot(self.x[4], self.x[5]))
+        if speed > self._max_speed_px:
+            scale = self._max_speed_px / speed
+            self.x[4] *= scale
+            self.x[5] *= scale
         h_scale = max(self.x[3], 1.0)
-        Q = np.diag(
-            [
-                (self._Q_scale * h_scale) ** 2,
-                (self._Q_scale * h_scale) ** 2,
-                (self._Q_scale * h_scale) ** 2,
-                (self._Q_scale * h_scale) ** 2,
-                (self._Q_scale * h_scale * 0.5) ** 2,
-                (self._Q_scale * h_scale * 0.5) ** 2,
-                (self._Q_scale * h_scale * 0.5) ** 2,
-                (self._Q_scale * h_scale * 0.5) ** 2,
-            ]
-        )
+        q_pos = (self._Q_scale * h_scale) ** 2
+        q_size = (self._Q_scale * h_scale * 0.2) ** 2  # box size barely drifts
+        q_vel = (self._Q_scale * h_scale * 0.5) ** 2
+        Q = np.diag([q_pos, q_pos, q_size, q_size, q_vel, q_vel])
         self.P = self._F @ self.P @ self._F.T + Q
 
     def update(self, cx: float, cy: float, w: float, h: float) -> None:
@@ -89,8 +112,14 @@ class _Kalman2D:
         S = self._H @ self.P @ self._H.T + R
         K = self.P @ self._H.T @ np.linalg.inv(S)
         self.x = self.x + K @ y
-        I_KH = np.eye(8, dtype=np.float64) - K @ self._H
+        I_KH = np.eye(6, dtype=np.float64) - K @ self._H
         self.P = I_KH @ self.P
+
+    def freeze_velocity(self) -> None:
+        """Zero the velocity components — call when a track goes LOST so its
+        predicted bbox stops moving instead of running away into the void."""
+        self.x[4] = 0.0
+        self.x[5] = 0.0
 
     def bbox_xyxy(self) -> tuple[int, int, int, int]:
         cx, cy, w, h = self.x[:4]
@@ -232,6 +261,9 @@ class ByteTracker:
         elif lane.state is TrackState.ACTIVE:
             if lane.frames_since_match >= self._cfg.max_age:
                 lane.state = TrackState.LOST
+                # Freeze position once we lose sight — extrapolation is more
+                # likely to mislead than help over long gaps.
+                lane.kalman.freeze_velocity()
         elif lane.state is TrackState.LOST:
             if lane.frames_since_match == 0:
                 lane.state = TrackState.ACTIVE

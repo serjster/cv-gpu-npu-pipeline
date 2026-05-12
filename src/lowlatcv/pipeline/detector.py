@@ -339,10 +339,18 @@ class TiledOnnxDetector:
         rows = self._cfg.tile_rows
         cols = self._cfg.tile_cols
         # Decide which tiles to run this cycle.
-        if self._cfg.tile_on_demand and self._hint_board is not None:
+        on_demand = self._cfg.tile_on_demand and self._hint_board is not None
+        if on_demand:
+            assert self._hint_board is not None
             to_run = self._hint_board.select_tiles(
                 rows, cols, H, W, self._cfg.tile_refresh_tiles_per_cycle
             )
+            # In on-demand mode the cache *must not* carry old detections
+            # forward — feeding stale measurements into the tracker's Kalman
+            # update is exactly what made boxes drift and grow before. Emit
+            # only this cycle's fresh boxes; the tracker holds the rest alive
+            # via its motion model until a future hint cycle re-covers them.
+            self._per_tile.clear()
         else:
             to_run = {(r, c) for r in range(rows) for c in range(cols)}
 

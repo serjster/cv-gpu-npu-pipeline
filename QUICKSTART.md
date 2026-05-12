@@ -306,6 +306,8 @@ accumulate as the project matures.
 | 200 % CPU on raw playback                        | cv2.imshow software-blits 4K frames on macOS                      | already swapped to SDLDisplaySink (Metal/GL); raw mode now ~15 % CPU at 4K                |
 | Many boxes on factory yards / parking lots       | model fires on dense object clusters in tiles                     | raise `--score-threshold 0.35-0.45`; or use a larger model (`--variant visdrone-s`)       |
 | ID swaps when cars pass close together           | greedy IoU matching, no appearance features                       | known limitation; add a re-ID head later (phase 9 perf)                                   |
+| Boxes grow / gain phantom velocity over time     | Kalman had vw/vh state + huge initial velocity variance           | fixed — Kalman is now 6-state (no w/h velocity), velocity clamped, frozen on LOST         |
+| Per-tile cache emits stale boxes in on-demand    | TiledOnnxDetector cached old detections from un-rerun tiles       | fixed — on-demand mode emits only this cycle's fresh detections; tracker Kalman holds rest |
 | Activity Monitor "GPU" at 1 %                    | macOS GPU column doesn't show ANE                                 | ANE is busy via CoreML EP — `powermetrics --samplers ane` to confirm                       |
 | `lowlatcv` segfaults on macOS with `imshow`      | cv2 + pygame both bundle SDL2 — known objc class clash warning    | use `--display-backend sdl` (default); the cv2 fallback was removed                       |
 | `Error in building plan` from CoreML EP          | model imgsz ≠ tensor imgsz                                        | re-export the ONNX at the exact imgsz you're feeding (no `dynamic=True` for CoreML EP)    |
