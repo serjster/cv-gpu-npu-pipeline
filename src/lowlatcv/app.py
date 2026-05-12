@@ -26,10 +26,12 @@ from lowlatcv.pipeline import source as source_module
 from lowlatcv.pipeline import tracker as tracker_module
 from lowlatcv.pipeline import vlm as vlm_module
 from lowlatcv.pipeline.async_detector import AsyncDetector
+from lowlatcv.pipeline.detector import TiledOnnxDetector
 from lowlatcv.pipeline.overlay import Overlay
 from lowlatcv.pipeline.preprocess import Preprocess
 from lowlatcv.pipeline.runner import Pipeline
 from lowlatcv.pipeline.scheduler import CaptionScheduler
+from lowlatcv.pipeline.tile_hints import TileHintBoard
 from lowlatcv.pipeline.vlm import CaptionResultStore
 
 log = logging.getLogger(__name__)
@@ -66,10 +68,16 @@ def build_pipeline(
         stages: list[Any] = [source, sink]
         return Pipeline(stages, tracer, queue_size=cfg.queue_size)
     preprocess = Preprocess(cfg.preprocess)
-    detector = detector_module.from_config(cfg.detector)
+    hint_board: TileHintBoard | None = None
+    detector: Any
+    if cfg.detector.tile_on_demand and cfg.detector.backend.lower() == "onnx-tiled":
+        hint_board = TileHintBoard()
+        detector = TiledOnnxDetector(cfg.detector, hint_board=hint_board)
+    else:
+        detector = detector_module.from_config(cfg.detector)
     if cfg.detector.async_detection:
         detector = AsyncDetector(detector, detect_every_n=cfg.detector.detect_every_n)
-    tracker = tracker_module.from_config(cfg.tracker)
+    tracker = tracker_module.from_config(cfg.tracker, hint_board=hint_board)
     caption_store = CaptionResultStore()
     vlm = vlm_module.from_config(cfg.vlm)
     scheduler = CaptionScheduler(cfg.vlm, caption_store, vlm=vlm)
@@ -143,6 +151,8 @@ def _apply_detector_overrides(
     tile_input_size: int | None,
     async_detection: bool | None,
     detect_every_n: int | None,
+    tile_on_demand: bool | None,
+    tile_refresh_tiles_per_cycle: int | None,
 ) -> PipelineConfig:
     det = cfg.detector
     if backend is not None:
@@ -168,6 +178,10 @@ def _apply_detector_overrides(
         det = dataclasses.replace(det, async_detection=async_detection)
     if detect_every_n is not None:
         det = dataclasses.replace(det, detect_every_n=detect_every_n)
+    if tile_on_demand is not None:
+        det = dataclasses.replace(det, tile_on_demand=tile_on_demand)
+    if tile_refresh_tiles_per_cycle is not None:
+        det = dataclasses.replace(det, tile_refresh_tiles_per_cycle=tile_refresh_tiles_per_cycle)
     return dataclasses.replace(cfg, detector=det)
 
 
@@ -244,6 +258,16 @@ def run(
     detect_every_n: int | None = typer.Option(
         None, "--detect-every-n", help="submit a frame to the async detector every N frames"
     ),
+    tile_on_demand: bool = typer.Option(
+        False,
+        "--tile-on-demand",
+        help="onnx-tiled only: run only on tiles the tracker hinted (lost/tentative tracks) plus a rotating refresh",
+    ),
+    tile_refresh_tiles_per_cycle: int | None = typer.Option(
+        None,
+        "--tile-refresh-tiles-per-cycle",
+        help="how many rotating refresh tiles to add per inference cycle (default 1)",
+    ),
 ) -> None:
     """Run the pipeline end-to-end."""
     cfg = PipelineConfig.load(config)
@@ -272,6 +296,8 @@ def run(
         tile_input_size,
         async_detection or None,
         detect_every_n,
+        tile_on_demand or None,
+        tile_refresh_tiles_per_cycle,
     )
     cfg = _apply_vlm_overrides(
         cfg, vlm, vlm_model, vlm_host, vlm_prompt, vlm_cooldown, vlm_rate, vlm_fake_latency
@@ -316,6 +342,8 @@ def bench(
     tile_input_size: int | None = typer.Option(None, "--tile-input-size"),
     async_detection: bool = typer.Option(False, "--async-detection"),
     detect_every_n: int | None = typer.Option(None, "--detect-every-n"),
+    tile_on_demand: bool = typer.Option(False, "--tile-on-demand"),
+    tile_refresh_tiles_per_cycle: int | None = typer.Option(None, "--tile-refresh-tiles-per-cycle"),
 ) -> None:
     """Run benchmark mode and report latency. Sink is forced to null."""
     cfg = PipelineConfig.load(config)
@@ -335,6 +363,8 @@ def bench(
         tile_input_size,
         async_detection or None,
         detect_every_n,
+        tile_on_demand or None,
+        tile_refresh_tiles_per_cycle,
     )
     cfg = _apply_vlm_overrides(
         cfg, vlm, vlm_model, vlm_host, vlm_prompt, vlm_cooldown, vlm_rate, vlm_fake_latency

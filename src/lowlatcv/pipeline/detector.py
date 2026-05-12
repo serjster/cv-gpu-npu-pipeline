@@ -31,6 +31,7 @@ from lowlatcv.pipeline.detector_post import (
     nms,
     unletterbox_xyxy,
 )
+from lowlatcv.pipeline.tile_hints import TileHintBoard
 
 log = logging.getLogger(__name__)
 
@@ -270,7 +271,11 @@ class TiledOnnxDetector:
 
     name = "detector"
 
-    def __init__(self, cfg: DetectorConfig) -> None:
+    def __init__(
+        self,
+        cfg: DetectorConfig,
+        hint_board: TileHintBoard | None = None,
+    ) -> None:
         if cfg.weights is None:
             raise ValueError("TiledOnnxDetector requires DetectorConfig.weights")
         if cfg.tile_rows < 1 or cfg.tile_cols < 1:
@@ -281,6 +286,11 @@ class TiledOnnxDetector:
         self._session: Any = None
         self._input_name: str = ""
         self._effective_tile_input: int = cfg.tile_input_size
+        # Tile-on-demand state: per-tile latest detection lists (in original
+        # frame coords) so the aggregate output stays full-frame even when
+        # only a subset of tiles was rerun this cycle. None entry = never run.
+        self._hint_board = hint_board
+        self._per_tile: dict[tuple[int, int], list[Detection]] = {}
 
     async def setup(self) -> None:
         import onnxruntime as ort
@@ -321,10 +331,27 @@ class TiledOnnxDetector:
 
     async def process(self, item: Frame) -> Frame:
         loop = asyncio.get_running_loop()
-        dets = await loop.run_in_executor(None, self._infer_all_tiles, item.image)
+        dets = await loop.run_in_executor(None, self._infer_blocking, item.image)
         return dataclasses.replace(item, detections=dets)
 
-    def _infer_all_tiles(self, image: NDArray[np.uint8]) -> tuple[Detection, ...]:
+    def _infer_blocking(self, image: NDArray[np.uint8]) -> tuple[Detection, ...]:
+        H, W = image.shape[:2]
+        rows = self._cfg.tile_rows
+        cols = self._cfg.tile_cols
+        # Decide which tiles to run this cycle.
+        if self._cfg.tile_on_demand and self._hint_board is not None:
+            to_run = self._hint_board.select_tiles(
+                rows, cols, H, W, self._cfg.tile_refresh_tiles_per_cycle
+            )
+        else:
+            to_run = {(r, c) for r in range(rows) for c in range(cols)}
+
+        for r, c in to_run:
+            self._per_tile[(r, c)] = self._run_one_tile(image, r, c)
+
+        return self._aggregate()
+
+    def _run_one_tile(self, image: NDArray[np.uint8], r: int, c: int) -> list[Detection]:
         H, W = image.shape[:2]
         rows = self._cfg.tile_rows
         cols = self._cfg.tile_cols
@@ -333,58 +360,52 @@ class TiledOnnxDetector:
         tile_w = W / cols
         oy = int(round(tile_h * ov))
         ox = int(round(tile_w * ov))
+        y1 = max(0, int(round(r * tile_h)) - (oy if r > 0 else 0))
+        y2 = min(H, int(round((r + 1) * tile_h)) + (oy if r < rows - 1 else 0))
+        x1 = max(0, int(round(c * tile_w)) - (ox if c > 0 else 0))
+        x2 = min(W, int(round((c + 1) * tile_w)) + (ox if c < cols - 1 else 0))
+        if y2 <= y1 or x2 <= x1:
+            return []
+        tile = image[y1:y2, x1:x2]
+        tensor, lb = _letterbox_for_inference(tile, self._effective_tile_input)
+        raw = self._session.run(None, {self._input_name: tensor})[0]
+        boxes, scores, class_ids = decode_yolov8(np.asarray(raw), self._cfg.num_classes)
+        b, s, cl = filter_threshold_and_nms(
+            boxes,
+            scores,
+            class_ids,
+            score_threshold=self._cfg.score_threshold,
+            iou_threshold=self._cfg.nms_threshold,
+            max_detections=self._cfg.max_detections,
+        )
+        if b.size == 0:
+            return []
+        b = unletterbox_xyxy(b, letterbox_hw=lb, orig_hw=(y2 - y1, x2 - x1))
+        b[:, [0, 2]] += x1
+        b[:, [1, 3]] += y1
+        return [
+            Detection(
+                bbox=(int(bx1), int(by1), int(bx2), int(by2)),
+                score=float(score),
+                class_id=int(cls),
+            )
+            for (bx1, by1, bx2, by2), score, cls in zip(b, s, cl, strict=False)
+        ]
 
-        all_boxes: list[NDArray[np.float32]] = []
-        all_scores: list[NDArray[np.float32]] = []
-        all_cls: list[NDArray[np.int64]] = []
-
-        for r in range(rows):
-            for c in range(cols):
-                y1 = max(0, int(round(r * tile_h)) - (oy if r > 0 else 0))
-                y2 = min(H, int(round((r + 1) * tile_h)) + (oy if r < rows - 1 else 0))
-                x1 = max(0, int(round(c * tile_w)) - (ox if c > 0 else 0))
-                x2 = min(W, int(round((c + 1) * tile_w)) + (ox if c < cols - 1 else 0))
-                if y2 <= y1 or x2 <= x1:
-                    continue
-                tile = image[y1:y2, x1:x2]
-                tensor, lb = _letterbox_for_inference(tile, self._effective_tile_input)
-                raw = self._session.run(None, {self._input_name: tensor})[0]
-                boxes, scores, class_ids = decode_yolov8(np.asarray(raw), self._cfg.num_classes)
-                b, s, cl = filter_threshold_and_nms(
-                    boxes,
-                    scores,
-                    class_ids,
-                    score_threshold=self._cfg.score_threshold,
-                    iou_threshold=self._cfg.nms_threshold,
-                    max_detections=self._cfg.max_detections,
-                )
-                if b.size == 0:
-                    continue
-                b = unletterbox_xyxy(b, letterbox_hw=lb, orig_hw=(y2 - y1, x2 - x1))
-                b[:, [0, 2]] += x1
-                b[:, [1, 3]] += y1
-                all_boxes.append(b)
-                all_scores.append(s)
-                all_cls.append(cl)
-
-        if not all_boxes:
+    def _aggregate(self) -> tuple[Detection, ...]:
+        if not self._per_tile:
             return ()
-
-        merged_b = np.concatenate(all_boxes, axis=0)
-        merged_s = np.concatenate(all_scores, axis=0)
-        merged_c = np.concatenate(all_cls, axis=0)
-        keep = nms(merged_b, merged_s, iou_threshold=self._cfg.nms_threshold)
+        all_dets: list[Detection] = []
+        for dets in self._per_tile.values():
+            all_dets.extend(dets)
+        if not all_dets:
+            return ()
+        boxes = np.array([d.bbox for d in all_dets], dtype=np.float32)
+        scores = np.array([d.score for d in all_dets], dtype=np.float32)
+        keep = nms(boxes, scores, iou_threshold=self._cfg.nms_threshold)
         if keep.size > self._cfg.max_detections:
             keep = keep[: self._cfg.max_detections]
-        return tuple(
-            Detection(
-                bbox=(int(x1), int(y1), int(x2), int(y2)),
-                score=float(merged_s[i]),
-                class_id=int(merged_c[i]),
-            )
-            for i in keep
-            for x1, y1, x2, y2 in (merged_b[i],)
-        )
+        return tuple(all_dets[int(i)] for i in keep)
 
     async def teardown(self) -> None:
         self._session = None

@@ -102,6 +102,18 @@ uv run lowlatcv run --source data/b3d/videos/hwy00.mp4 --display \
   --async-detection --detect-every-n 3
 ```
 
+```bash
+# Tile-on-demand: detector runs only on tiles where the tracker reports
+# lost/tentative tracks plus one rotating refresh tile per cycle. Per-tile
+# detection cache keeps the aggregate output full-frame. Combine with
+# --async-detection so the per-frame critical path stays cheap.
+uv run lowlatcv run --source data/b3d/videos/hwy00.mp4 --display \
+  --detector onnx-tiled --weights data/models/yolov8n-visdrone.onnx \
+  --num-classes 10 --tiles 3x3 \
+  --tile-on-demand --tile-refresh-tiles-per-cycle 1 \
+  --async-detection --detect-every-n 2
+```
+
 (`--tile-input-size` auto-snaps to the model's fixed imgsz, so you only need
 to pass it if the model was exported with `dynamic=True`.)
 
@@ -306,6 +318,8 @@ authoritative list.
 | `--tile-input-size N`      | both  | per-tile letterbox target                         |
 | `--async-detection`        | both  | detector runs on a worker thread (off crit path)  |
 | `--detect-every-n N`       | both  | submit a frame to async detector every N frames   |
+| `--tile-on-demand`         | both  | onnx-tiled only: run only tracker-hinted tiles    |
+| `--tile-refresh-tiles-per-cycle N` | both | rotating refresh tiles per cycle (default 1) |
 | `--vlm fake\|ollama\|none` | both  | VLM backend                                       |
 | `--vlm-model NAME`         | both  | Ollama model name                                 |
 | `--vlm-host URL`           | both  | Ollama base URL                                   |

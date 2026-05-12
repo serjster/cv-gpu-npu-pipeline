@@ -23,6 +23,7 @@ from numpy.typing import NDArray
 
 from lowlatcv.config import TrackerConfig
 from lowlatcv.models.frame import Detection, Frame, Track, TrackState
+from lowlatcv.pipeline.tile_hints import TileHintBoard
 
 log = logging.getLogger(__name__)
 
@@ -126,8 +127,13 @@ class ByteTracker:
 
     name = "tracker"
 
-    def __init__(self, cfg: TrackerConfig | None = None) -> None:
+    def __init__(
+        self,
+        cfg: TrackerConfig | None = None,
+        hint_board: TileHintBoard | None = None,
+    ) -> None:
         self._cfg = cfg or TrackerConfig()
+        self._hint_board = hint_board
         self._lanes: list[_Lane] = []
         self._next_id = 1
         self._frame_idx = -1
@@ -182,6 +188,17 @@ class ByteTracker:
             self._spawn(high[di])
 
         self._lanes = [lane for lane in self._lanes if lane.state is not TrackState.DEAD]
+
+        # Tell the tiled detector which regions still need attention. LOST and
+        # TENTATIVE lanes are the ones a future inference cycle should re-cover.
+        if self._hint_board is not None:
+            self._hint_board.update_recovery_bboxes(
+                [
+                    lane.bbox
+                    for lane in self._lanes
+                    if lane.state is TrackState.LOST or lane.state is TrackState.TENTATIVE
+                ]
+            )
 
         snapshots = tuple(self._snapshot(lane) for lane in self._lanes)
         return dataclasses.replace(item, tracks=snapshots)
@@ -306,11 +323,14 @@ def _iou_xyxy(a: tuple[int, int, int, int], b: tuple[int, int, int, int]) -> flo
     return inter / union if union > 0 else 0.0
 
 
-def from_config(cfg: TrackerConfig) -> Tracker:
+def from_config(
+    cfg: TrackerConfig,
+    hint_board: TileHintBoard | None = None,
+) -> Tracker:
     """Factory Method: select a tracker backend from ``TrackerConfig.backend``."""
     backend = cfg.backend.lower()
     if backend in ("bytetrack", "byte"):
-        return ByteTracker(cfg)
+        return ByteTracker(cfg, hint_board=hint_board)
     raise ValueError(f"unknown tracker backend: {cfg.backend}")
 
 

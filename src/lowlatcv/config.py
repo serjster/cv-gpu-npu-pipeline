@@ -52,6 +52,11 @@ class DetectorConfig:
     # how often a new frame is submitted to the worker.
     async_detection: bool = False
     detect_every_n: int = 1
+    # Tile-on-demand: detector runs only on tiles the tracker hinted (lost /
+    # tentative tracks land there) plus a rotating refresh tile. Per-tile
+    # detection buffer is kept so the aggregate output remains full-frame.
+    tile_on_demand: bool = False
+    tile_refresh_tiles_per_cycle: int = 1
 
 
 @dataclass(frozen=True, slots=True)
