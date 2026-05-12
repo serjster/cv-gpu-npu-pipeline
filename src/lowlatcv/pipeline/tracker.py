@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Protocol
 
 import numpy as np
 from numpy.typing import NDArray
+from scipy.optimize import linear_sum_assignment
 
 from lowlatcv.config import TrackerConfig
 from lowlatcv.models.frame import Detection, Frame, Track, TrackState
@@ -208,20 +209,24 @@ class ByteTracker:
 
         live = [lane for lane in self._lanes if lane.state is not TrackState.DEAD]
 
-        matches_high, unmatched_live_idx, unmatched_high_idx = _greedy_match(
+        matches_high, unmatched_live_idx, unmatched_high_idx = _hungarian_iou_match(
             [lane.bbox for lane in live],
+            [lane.class_id for lane in live],
             [d.bbox for d in high],
-            self._cfg.iou_threshold,
+            [d.class_id for d in high],
+            iou_threshold=self._cfg.iou_threshold,
         )
         for li, di in matches_high:
             self._on_match(live[li], high[di])
 
         # Second pass: low-score detections recover unmatched live tracks.
         recover_lanes = [live[i] for i in unmatched_live_idx]
-        matches_low, still_unmatched_idx, _ = _greedy_match(
+        matches_low, still_unmatched_idx, _ = _hungarian_iou_match(
             [lane.bbox for lane in recover_lanes],
+            [lane.class_id for lane in recover_lanes],
             [d.bbox for d in low],
-            self._cfg.iou_threshold,
+            [d.class_id for d in low],
+            iou_threshold=self._cfg.iou_threshold,
         )
         for li, di in matches_low:
             self._on_match(recover_lanes[li], low[di])
@@ -361,32 +366,50 @@ def _xyxy_to_cxcywh(b: tuple[int, int, int, int]) -> tuple[float, float, float, 
     return ((x1 + x2) / 2.0, (y1 + y2) / 2.0, float(x2 - x1), float(y2 - y1))
 
 
-def _greedy_match(
+def _hungarian_iou_match(
     track_bboxes: list[tuple[int, int, int, int]],
+    track_classes: list[int],
     det_bboxes: list[tuple[int, int, int, int]],
+    det_classes: list[int],
     iou_threshold: float,
 ) -> tuple[list[tuple[int, int]], list[int], list[int]]:
-    """Greedy IoU matching. Returns (matches, unmatched_track_idxs, unmatched_det_idxs)."""
+    """Class-aware Hungarian IoU matching.
+
+    Cost = ``1 - IoU`` for pairs that share a class AND have IoU above
+    ``iou_threshold``; ``INF`` otherwise so the solver cannot pick them.
+    Hungarian assignment then minimises total cost over all feasible
+    pairings — better than greedy "best-pair-first" in dense clusters where
+    a single high-IoU match can rob an adjacent track of its only candidate.
+    Class agreement prevents a car track from snapping onto an overlapping
+    truck detection (and the subsequent Kalman.update from inferring phantom
+    velocity from the wrong target — the classic "ejection" symptom).
+    """
     if not track_bboxes or not det_bboxes:
         return [], list(range(len(track_bboxes))), list(range(len(det_bboxes)))
-    pairs: list[tuple[float, int, int]] = []
+    nt = len(track_bboxes)
+    nd = len(det_bboxes)
+    INF = 1e6
+    cost = np.full((nt, nd), INF, dtype=np.float64)
     for ti, tb in enumerate(track_bboxes):
+        tcls = track_classes[ti]
         for di, db in enumerate(det_bboxes):
+            if det_classes[di] != tcls:
+                continue
             iou = _iou_xyxy(tb, db)
             if iou >= iou_threshold:
-                pairs.append((iou, ti, di))
-    pairs.sort(reverse=True)
+                cost[ti, di] = 1.0 - iou
+    row_idx, col_idx = linear_sum_assignment(cost)
+    matches: list[tuple[int, int]] = []
     used_t: set[int] = set()
     used_d: set[int] = set()
-    matches: list[tuple[int, int]] = []
-    for _, ti, di in pairs:
-        if ti in used_t or di in used_d:
+    for ti, di in zip(row_idx, col_idx, strict=False):
+        if cost[ti, di] >= INF:
             continue
-        matches.append((ti, di))
-        used_t.add(ti)
-        used_d.add(di)
-    unmatched_t = [i for i in range(len(track_bboxes)) if i not in used_t]
-    unmatched_d = [i for i in range(len(det_bboxes)) if i not in used_d]
+        matches.append((int(ti), int(di)))
+        used_t.add(int(ti))
+        used_d.add(int(di))
+    unmatched_t = [i for i in range(nt) if i not in used_t]
+    unmatched_d = [i for i in range(nd) if i not in used_d]
     return matches, unmatched_t, unmatched_d
 
 
