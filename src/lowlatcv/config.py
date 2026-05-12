@@ -56,11 +56,20 @@ class TrackerConfig:
 
 @dataclass(frozen=True, slots=True)
 class VLMConfig:
-    backend: str = "stub"
+    backend: str = "none"
     weights: str | None = None
+    model: str = "moondream"
+    host: str = "http://localhost:11434"
+    prompt: str = "Describe the object in one short sentence."
     max_in_flight: int = 1
-    refresh_seconds: float | None = None
+    refresh_seconds: float = 5.0
+    rate_limit_hz: float = 2.0
+    request_queue_size: int = 4
+    request_timeout_s: float = 30.0
+    caption_chars: int = 64
     drop_policy: Literal["block", "drop_oldest_non_first"] = "drop_oldest_non_first"
+    worker_kind: Literal["thread", "process"] = "thread"
+    fake_latency_s: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)

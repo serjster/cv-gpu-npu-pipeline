@@ -22,6 +22,11 @@ class Caption:
 
 @dataclass(frozen=True, slots=True)
 class CaptionRequest:
+    """Command sent from the per-frame critical path to the VLM worker."""
+
     track_id: int
     frame_id: int
     crop: Any
+    prompt: str | None = None
+    first_sighting: bool = False
+    submitted_ns: int = 0

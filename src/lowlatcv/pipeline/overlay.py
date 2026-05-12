@@ -22,6 +22,7 @@ from numpy.typing import NDArray
 
 from lowlatcv.config import OverlayConfig
 from lowlatcv.models.frame import Frame, Track, TrackState
+from lowlatcv.pipeline.vlm import CaptionResultStore
 
 log = logging.getLogger(__name__)
 
@@ -37,8 +38,15 @@ _STATE_STYLE: dict[TrackState, tuple[int, bool]] = {
 class Overlay:
     name = "overlay"
 
-    def __init__(self, cfg: OverlayConfig | None = None) -> None:
+    def __init__(
+        self,
+        cfg: OverlayConfig | None = None,
+        caption_store: CaptionResultStore | None = None,
+        caption_chars: int = 64,
+    ) -> None:
         self._cfg = cfg or OverlayConfig()
+        self._caption_store = caption_store
+        self._caption_chars = caption_chars
 
     async def setup(self) -> None: ...
 
@@ -73,6 +81,31 @@ class Overlay:
                 thickness=1,
                 lineType=cv2.LINE_AA,
             )
+            self._maybe_draw_caption(img, tr, x1, y2)
+
+    def _maybe_draw_caption(
+        self,
+        img: NDArray[np.uint8],
+        tr: Track,
+        x1: int,
+        y2: int,
+    ) -> None:
+        if not self._cfg.draw_caption or self._caption_store is None:
+            return
+        cap = self._caption_store.get(tr.track_id)
+        if cap is None:
+            return
+        text = cap.text[: self._caption_chars]
+        cv2.putText(
+            img,
+            text,
+            (x1, min(img.shape[0] - 2, y2 + 16)),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            self._cfg.font_scale,
+            self._cfg.color,
+            thickness=1,
+            lineType=cv2.LINE_AA,
+        )
 
     def _draw_detections(self, item: Frame) -> None:
         img = item.image

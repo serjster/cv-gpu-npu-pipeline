@@ -17,18 +17,18 @@
 
 **Tasks:**
 
-- [ ] `src/lowlatcv/pipeline/vlm.py` — `VLM` Protocol
-- [ ] `OllamaVLM` backend (HTTP client to local Ollama; configurable model, e.g. `moondream`, `llava`, `qwen2-vl`)
-- [ ] Reuse `CaptionRequest` Command from `models/caption.py` (Phase 1) — extend with `prompt: str | None`
-- [ ] Caption-request emitter: `CaptionScheduler` stage between `Tracker` and `VLM`, with sparse policy (per-track cooldown + global rate limit, both config-driven)
-- [ ] VLM worker on a **separate thread** by default, **separate process** behind a config flag (for GIL-bound or crash-isolation cases)
-- [ ] Caption join-back: `CaptionResultStore` (thread-safe `dict[int, Caption]`), updated by VLM worker, read by `Overlay`
-- [ ] `Overlay` reads caption store and renders the latest per-track caption, truncated to N chars
-- [ ] Drop policy from `ARCHITECTURE.md`: if request queue fills, drop *new-track-but-not-first-sighting* requests so first-seen requests are preserved
-- [ ] Benchmark proof: introduce 1 s of artificial VLM latency, verify per-frame FPS unchanged in the latency report
-- [ ] Test: `FakeVLM` backend, `CaptionScheduler` honours cooldown and rate limit
-- [ ] Test: caption written for track A is never rendered on track B (no id mix-up)
-- [ ] Test: queue-full drop policy preserves first-sighting requests
-- [ ] Test: VLM worker crash is contained — pipeline continues, error logged, no captions emitted
+- [x] `src/lowlatcv/pipeline/vlm.py` — `VLM` Protocol
+- [x] `OllamaVLM` backend (HTTP client to local Ollama; configurable model, e.g. `moondream`, `llava`, `qwen2-vl`)
+- [x] Reuse `CaptionRequest` Command from `models/caption.py` (Phase 1) — extend with `prompt: str | None`
+- [x] Caption-request emitter: `CaptionScheduler` stage between `Tracker` and `VLM`, with sparse policy (per-track cooldown + global rate limit, both config-driven)
+- [x] VLM worker on a **separate thread** by default, **separate process** behind a config flag (for GIL-bound or crash-isolation cases)
+- [x] Caption join-back: `CaptionResultStore` (thread-safe `dict[int, Caption]`), updated by VLM worker, read by `Overlay`
+- [x] `Overlay` reads caption store and renders the latest per-track caption, truncated to N chars
+- [x] Drop policy from `ARCHITECTURE.md`: if request queue fills, drop *new-track-but-not-first-sighting* requests so first-seen requests are preserved
+- [x] Benchmark proof: introduce 1 s of artificial VLM latency, verify per-frame FPS unchanged in the latency report
+- [x] Test: `FakeVLM` backend, `CaptionScheduler` honours cooldown and rate limit
+- [x] Test: caption written for track A is never rendered on track B (no id mix-up)
+- [x] Test: queue-full drop policy preserves first-sighting requests
+- [x] Test: VLM worker crash is contained — pipeline continues, error logged, no captions emitted
 
 **Done when:** the pipeline sustains its detector-bound FPS even with a deliberately slow VLM, and live captions appear under track boxes within a few seconds of activity.

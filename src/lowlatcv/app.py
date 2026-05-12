@@ -24,9 +24,12 @@ from lowlatcv.pipeline import detector as detector_module
 from lowlatcv.pipeline import sink as sink_module
 from lowlatcv.pipeline import source as source_module
 from lowlatcv.pipeline import tracker as tracker_module
+from lowlatcv.pipeline import vlm as vlm_module
 from lowlatcv.pipeline.overlay import Overlay
 from lowlatcv.pipeline.preprocess import Preprocess
 from lowlatcv.pipeline.runner import Pipeline
+from lowlatcv.pipeline.scheduler import CaptionScheduler
+from lowlatcv.pipeline.vlm import CaptionResultStore
 
 log = logging.getLogger(__name__)
 app = typer.Typer(no_args_is_help=True, add_completion=False)
@@ -64,8 +67,11 @@ def build_pipeline(
     preprocess = Preprocess(cfg.preprocess)
     detector = detector_module.from_config(cfg.detector)
     tracker = tracker_module.from_config(cfg.tracker)
-    overlay = Overlay(cfg.overlay)
-    stages = [source, preprocess, detector, tracker, overlay, sink]
+    caption_store = CaptionResultStore()
+    vlm = vlm_module.from_config(cfg.vlm)
+    scheduler = CaptionScheduler(cfg.vlm, caption_store, vlm=vlm)
+    overlay = Overlay(cfg.overlay, caption_store=caption_store, caption_chars=cfg.vlm.caption_chars)
+    stages = [source, preprocess, detector, tracker, scheduler, overlay, sink]
     return Pipeline(stages, tracer, queue_size=cfg.queue_size)
 
 
@@ -82,6 +88,34 @@ async def _drive(
     pipeline = build_pipeline(cfg, tracer, frame_limit=frame_limit, raw=raw, pace=pace)
     await pipeline.run()
     return reporter.render()
+
+
+def _apply_vlm_overrides(
+    cfg: PipelineConfig,
+    backend: str | None,
+    model: str | None,
+    host: str | None,
+    prompt: str | None,
+    cooldown: float | None,
+    rate_hz: float | None,
+    fake_latency: float | None,
+) -> PipelineConfig:
+    v = cfg.vlm
+    if backend is not None:
+        v = dataclasses.replace(v, backend=backend)
+    if model is not None:
+        v = dataclasses.replace(v, model=model)
+    if host is not None:
+        v = dataclasses.replace(v, host=host)
+    if prompt is not None:
+        v = dataclasses.replace(v, prompt=prompt)
+    if cooldown is not None:
+        v = dataclasses.replace(v, refresh_seconds=cooldown)
+    if rate_hz is not None:
+        v = dataclasses.replace(v, rate_limit_hz=rate_hz)
+    if fake_latency is not None:
+        v = dataclasses.replace(v, fake_latency_s=fake_latency)
+    return dataclasses.replace(cfg, vlm=v)
 
 
 def _apply_detector_overrides(
@@ -134,6 +168,17 @@ def run(
         "--fps",
         help="pace the source to N fps (default: file's intrinsic FPS; --fps 0 = no pacing).",
     ),
+    vlm: str | None = typer.Option(None, "--vlm", help="VLM backend: fake / ollama / none"),
+    vlm_model: str | None = typer.Option(None, "--vlm-model", help="Ollama model name"),
+    vlm_host: str | None = typer.Option(None, "--vlm-host"),
+    vlm_prompt: str | None = typer.Option(None, "--vlm-prompt"),
+    vlm_cooldown: float | None = typer.Option(
+        None, "--vlm-cooldown", help="per-track cooldown seconds"
+    ),
+    vlm_rate: float | None = typer.Option(None, "--vlm-rate", help="global rate limit Hz"),
+    vlm_fake_latency: float | None = typer.Option(
+        None, "--vlm-fake-latency", help="FakeVLM synthetic latency (s) for the no-impact proof"
+    ),
 ) -> None:
     """Run the pipeline end-to-end."""
     cfg = PipelineConfig.load(config)
@@ -151,6 +196,9 @@ def run(
     cfg = dataclasses.replace(cfg, sink=sink_cfg)
     cfg = _apply_detector_overrides(
         cfg, detector, weights, score_threshold, iou_threshold, execution_provider
+    )
+    cfg = _apply_vlm_overrides(
+        cfg, vlm, vlm_model, vlm_host, vlm_prompt, vlm_cooldown, vlm_rate, vlm_fake_latency
     )
     # Pacing: default on (real-time playback). --fps 0 disables. --fps N overrides.
     if fps is None:
@@ -177,6 +225,13 @@ def bench(
     score_threshold: float | None = typer.Option(None, "--score-threshold"),
     iou_threshold: float | None = typer.Option(None, "--iou-threshold"),
     execution_provider: str | None = typer.Option(None, "--execution-provider"),
+    vlm: str | None = typer.Option(None, "--vlm"),
+    vlm_model: str | None = typer.Option(None, "--vlm-model"),
+    vlm_host: str | None = typer.Option(None, "--vlm-host"),
+    vlm_prompt: str | None = typer.Option(None, "--vlm-prompt"),
+    vlm_cooldown: float | None = typer.Option(None, "--vlm-cooldown"),
+    vlm_rate: float | None = typer.Option(None, "--vlm-rate"),
+    vlm_fake_latency: float | None = typer.Option(None, "--vlm-fake-latency"),
 ) -> None:
     """Run benchmark mode and report latency. Sink is forced to null."""
     cfg = PipelineConfig.load(config)
@@ -185,6 +240,9 @@ def bench(
     cfg = dataclasses.replace(cfg, sink=SinkConfig(kind="null"))
     cfg = _apply_detector_overrides(
         cfg, detector, weights, score_threshold, iou_threshold, execution_provider
+    )
+    cfg = _apply_vlm_overrides(
+        cfg, vlm, vlm_model, vlm_host, vlm_prompt, vlm_cooldown, vlm_rate, vlm_fake_latency
     )
     limit = frames if frames > 0 else None
     report = asyncio.run(_drive(cfg, limit, report_format))
