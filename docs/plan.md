@@ -34,8 +34,8 @@ The Strategy pattern (`Detector`, `VLM`, `FrameSource`, `FrameSink`) keeps the p
 
 | #  | Phase                                                                  | Status |
 |----|------------------------------------------------------------------------|--------|
-| 1  | [Foundation & scaffolding](plan/phase-1-foundation.md)                 | open   |
-| 2  | [Source & sink (end-to-end skeleton)](plan/phase-2-source-sink.md)     | open   |
+| 1  | [Foundation & scaffolding](plan/phase-1-foundation.md)                 | closed |
+| 2  | [Source & sink (end-to-end skeleton)](plan/phase-2-source-sink.md)     | in-progress |
 | 3  | [Object detection](plan/phase-3-detection.md)                          | open   |
 | 4  | [Tracking](plan/phase-4-tracking.md)                                   | open   |
 | 5  | [VLM async (GPU/ROCm via Ollama)](plan/phase-5-vlm-async.md)           | open   |

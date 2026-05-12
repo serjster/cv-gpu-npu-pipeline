@@ -13,21 +13,21 @@
 
 **Tasks:**
 
-- [ ] `pyproject.toml` with `uv` (deps: `typer`, `opencv-python`, `numpy`, `pytest`, `ruff`, `mypy`; gate heavier deps to extras)
-- [ ] `src/lowlatcv/__init__.py`
-- [ ] `src/lowlatcv/app.py` — typer CLI with `run` and `bench` subcommands (stubs invoking the orchestrator)
-- [ ] `src/lowlatcv/config.py` — `PipelineConfig` + sub-configs from `ARCHITECTURE.md`, env + YAML overlay loading
-- [ ] `src/lowlatcv/models/frame.py` — `Frame`, `Detection`, `Track` (`@dataclass(frozen=True, slots=True)`)
-- [ ] `src/lowlatcv/models/caption.py` — `Caption`, `CaptionRequest`
-- [ ] `src/lowlatcv/pipeline/stage.py` — `Stage[InT, OutT]` Protocol, `StageRunner` (pull–process–push loop with tracer)
-- [ ] `src/lowlatcv/pipeline/runner.py` — `Pipeline` Facade (graph build, start, stop, await, reverse-order teardown)
-- [ ] `src/lowlatcv/metrics/tracer.py` — `tracer.span("name")` context manager; sliding-window p50/p90/p99/max
-- [ ] `src/lowlatcv/metrics/reporter.py` — Observer subscribers for table / JSON / CSV
-- [ ] `tests/test_stage_protocol.py` — dummy stage runs end-to-end through `StageRunner`
-- [ ] `tests/test_pipeline_lifecycle.py` — start → process N items → stop, teardown order is reverse
-- [ ] `tests/test_tracer.py` — percentile maths, nested-span isolation, queue-depth capture
-- [ ] `ruff` + `mypy --strict` + `pytest` configured in `pyproject.toml`; `uv run lint`, `uv run test`, `uv run format` all green on empty scaffold
-- [ ] Update `ARCHITECTURE.md` to cover **both** runtime profiles (Linux + AMD ROCm/XDNA and macOS + Apple Silicon CoreML/MPS/ANE) as parallel first-class hosts, kept swappable via Strategy. Keep the FPGA target intact.
-- [ ] `ast-index update` after `src/` has files, confirm `ast-index stats` reports a non-empty index
+- [x] `pyproject.toml` with `uv` (deps: `typer`, `opencv-python`, `numpy`, `pytest`, `ruff`, `mypy`; gate heavier deps to extras)
+- [x] `src/lowlatcv/__init__.py`
+- [x] `src/lowlatcv/app.py` — typer CLI with `run` and `bench` subcommands (stubs invoking the orchestrator)
+- [x] `src/lowlatcv/config.py` — `PipelineConfig` + sub-configs from `ARCHITECTURE.md`, env + YAML overlay loading
+- [x] `src/lowlatcv/models/frame.py` — `Frame`, `Detection`, `Track` (`@dataclass(frozen=True, slots=True)`)
+- [x] `src/lowlatcv/models/caption.py` — `Caption`, `CaptionRequest`
+- [x] `src/lowlatcv/pipeline/stage.py` — `Stage[InT, OutT]` Protocol, `StageRunner` (pull–process–push loop with tracer)
+- [x] `src/lowlatcv/pipeline/runner.py` — `Pipeline` Facade (graph build, start, stop, await, reverse-order teardown)
+- [x] `src/lowlatcv/metrics/tracer.py` — `tracer.span("name")` context manager; sliding-window p50/p90/p99/max
+- [x] `src/lowlatcv/metrics/reporter.py` — Observer subscribers for table / JSON / CSV
+- [x] `tests/test_stage_protocol.py` — dummy stage runs end-to-end through `StageRunner`
+- [x] `tests/test_pipeline_lifecycle.py` — start → process N items → stop, teardown order is reverse
+- [x] `tests/test_tracer.py` — percentile maths, nested-span isolation, queue-depth capture
+- [x] `ruff` + `mypy --strict` + `pytest` configured in `pyproject.toml`; `uv run lint`, `uv run test`, `uv run format` all green on empty scaffold
+- [x] Update `ARCHITECTURE.md` to cover **both** runtime profiles (Linux + AMD ROCm/XDNA and macOS + Apple Silicon CoreML/MPS/ANE) as parallel first-class hosts, kept swappable via Strategy. Keep the FPGA target intact.
+- [x] `ast-index update` after `src/` has files, confirm `ast-index stats` reports a non-empty index
 
 **Done when:** `uv run pytest` is green on the contract tests, `uv run lint` is clean, and `uv run lowlatcv bench --frames 10` runs a stub pipeline end-to-end and prints a latency table (even if every stage is a passthrough).

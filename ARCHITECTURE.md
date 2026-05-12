@@ -3,13 +3,28 @@
 ## Goal
 
 Build a Python reference pipeline whose **stage graph, queue depths, and latency contract** mirror the future AMD Versal
-AI Edge VEK385 (VE2802) FPGA implementation closely enough that a benchmark on macOS produces numbers directly
+AI Edge VEK385 (VE2802) FPGA implementation closely enough that a benchmark on the host produces numbers directly
 comparable to the FPGA bring-up. The Python implementation is the *behavioural model*; the Vitis/AIE-ML implementation
 will be the *production target*.
 
 The FPGA reference pipeline lives in `docs/research/versal-vek385-pipeline.md` and is the source of truth for stage
 names, ordering, and rough latency budget. Anything in this document that disagrees with that file is wrong — fix it
 here, not there.
+
+## Runtime profiles
+
+Two host runtimes are first-class. Both run the **same stage graph, the same queue contracts, the same tracer span
+names**, and the same orchestrator code. Only the per-stage backends differ, selected at construction time via the
+Strategy pattern (`Detector`, `VLM`, `FrameSource`, `FrameSink`). A change is only complete when it works on both
+profiles — or when the work is explicitly scoped to one and the gap on the other is documented in the phase doc.
+
+| Profile             | OS              | Detector backends                                                              | VLM backends                              | Accelerator                              |
+|---------------------|-----------------|--------------------------------------------------------------------------------|-------------------------------------------|------------------------------------------|
+| **macOS + Apple Si**| macOS 14+       | CoreML (`.mlpackage`), ONNX Runtime (`CoreMLExecutionProvider`, `CPU`)         | Ollama (Metal), CoreML-converted VLM      | M-series GPU (Metal/MPS) + Neural Engine |
+| **Linux + AMD**     | Arch / Ubuntu   | ONNX Runtime (`ROCMExecutionProvider`, `MIGraphXExecutionProvider`, `CPU`)     | Ollama (ROCm), FastFlowLM (XDNA NPU)      | Radeon GPU (ROCm) + Ryzen AI NPU (XDNA)  |
+
+Neither profile replaces the other. The FPGA target (AMD Versal VEK385) sits behind both — both host pipelines are
+*reference implementations* and a comparison rig for the FPGA bring-up.
 
 ## Pipeline overview
 
@@ -86,14 +101,15 @@ Resize and colour-convert to the detector's input tensor shape and dtype.
 
 Runs the bounding-box detector. Returns zero or more `Detection`s per frame.
 
-| Property        | Value                                                                                   |
-|-----------------|-----------------------------------------------------------------------------------------|
-| Input           | preprocessed `Frame`                                                                    |
-| Output          | `Frame` + `list[Detection]`                                                             |
-| Backends        | CoreML (`.mlpackage`), ONNX Runtime (CoreML EP), Ultralytics (`YOLOv8/11n` etc.)        |
-| Selection       | via `DetectorConfig.backend`                                                            |
-| Threading       | CPU/GPU-bound, executor thread                                                          |
-| FPGA equivalent | YOLO-class model compiled to AIE-ML v2 array; INT8 weights in URAM, activations in BRAM |
+| Property              | Value                                                                                                                                |
+|-----------------------|--------------------------------------------------------------------------------------------------------------------------------------|
+| Input                 | preprocessed `Frame`                                                                                                                 |
+| Output                | `Frame` + `list[Detection]`                                                                                                          |
+| Backends (macOS)      | CoreML (`.mlpackage`), ONNX Runtime (`CoreMLExecutionProvider`, `CPU`), Ultralytics (`YOLOv8/11n` etc.)                              |
+| Backends (Linux/AMD)  | ONNX Runtime (`ROCMExecutionProvider`, `MIGraphXExecutionProvider`, `CPU`), Ultralytics with `device='cuda'` via ROCm                |
+| Selection             | via `DetectorConfig.backend` + active runtime profile                                                                                |
+| Threading             | CPU/GPU-bound, executor thread                                                                                                       |
+| FPGA equivalent       | YOLO-class model compiled to AIE-ML v2 array; INT8 weights in URAM, activations in BRAM                                              |
 
 `Detection`:
 
@@ -135,16 +151,17 @@ class Track:
 
 Generates a natural-language description for a track. The slow stage. **Must not block per-frame work.**
 
-| Property        | Value                                                                                                         |
-|-----------------|---------------------------------------------------------------------------------------------------------------|
-| Input           | `CaptionRequest(track_id, crop, frame_id)` (own queue)                                                        |
-| Output          | `Caption(track_id, text, model, ts_ns)` posted to a result map                                                |
-| Schedule        | once on first detection of a new track; optional refresh every `vlm.refresh_seconds` per track                |
-| Backends        | LLaVA / Florence-2 / SmolVLM via `transformers`, or a small CoreML-converted VLM                              |
-| Concurrency     | dedicated worker (thread or process), single in-flight request at a time by default                           |
-| Drop policy     | if the request queue fills, drop **oldest** new-track requests last so first-seen requests are preserved      |
-| Threading       | CPU/GPU-bound, dedicated executor / process pool                                                              |
-| FPGA equivalent | dedicated AIE-ML partition or off-chip accelerator (PCIe to host); single-instance, multiplexed across tracks |
+| Property              | Value                                                                                                                |
+|-----------------------|----------------------------------------------------------------------------------------------------------------------|
+| Input                 | `CaptionRequest(track_id, crop, frame_id)` (own queue)                                                               |
+| Output                | `Caption(track_id, text, model, ts_ns)` posted to a result map                                                       |
+| Schedule              | once on first detection of a new track; optional refresh every `vlm.refresh_seconds` per track                       |
+| Backends (macOS)      | Ollama (Metal) running LLaVA / SmolVLM / Florence-2 class models; optional CoreML-converted VLM for ANE              |
+| Backends (Linux/AMD)  | Ollama (ROCm) on the Radeon GPU; FastFlowLM on the Ryzen AI XDNA NPU; `transformers` + `torch` on ROCm as a fallback |
+| Concurrency           | dedicated worker (thread or process), single in-flight request at a time by default                                  |
+| Drop policy           | if the request queue fills, drop **oldest** new-track requests last so first-seen requests are preserved             |
+| Threading             | CPU/GPU/NPU-bound, dedicated executor / process pool                                                                 |
+| FPGA equivalent       | dedicated AIE-ML partition or off-chip accelerator (PCIe to host); single-instance, multiplexed across tracks        |
 
 The tracker emits a `CaptionRequest` the first time it sees a track. The VLM worker processes requests serially and
 posts `Caption` results into a shared `dict[track_id, Caption]` consulted by the overlay stage.
@@ -238,6 +255,7 @@ Terminal consumer — display, file, or null.
 - Multi-camera / multi-stream
 - On-device training or fine-tuning
 - Re-identification across non-adjacent frames after a long gap
-- Anything Linux-host specific that won't run on macOS
+- Profile-exclusive features that break parity between macOS and Linux/AMD without an explicit phase scope and a
+  documented gap on the other profile
 
-These can be added once the macOS reference matches the FPGA reference end-to-end.
+These can be added once both host references match the FPGA reference end-to-end.
