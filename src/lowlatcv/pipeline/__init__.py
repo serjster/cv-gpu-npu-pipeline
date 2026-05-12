@@ -6,6 +6,7 @@ the ``Pipeline`` Facade, and the concrete ``FrameSource`` / ``Preprocess`` /
 as later phases plug them in.
 """
 
+from lowlatcv.pipeline.async_detector import AsyncDetector
 from lowlatcv.pipeline.detector import (
     CoreMLDetector,
     Detector,
@@ -26,6 +27,7 @@ from lowlatcv.pipeline.vlm import VLM, CaptionResultStore, FakeVLM, OllamaVLM, V
 __all__ = [
     "EOF",
     "VLM",
+    "AsyncDetector",
     "ByteTracker",
     "CaptionResultStore",
     "CaptionScheduler",

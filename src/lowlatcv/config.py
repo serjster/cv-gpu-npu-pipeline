@@ -46,6 +46,12 @@ class DetectorConfig:
     tile_cols: int = 1
     tile_overlap: float = 0.2
     tile_input_size: int = 640
+    # Async detection: detector runs on a worker thread, off the per-frame
+    # critical path. The tracker propagates Kalman-predicted positions on
+    # frames where no fresh detection has landed yet. detect_every_n caps
+    # how often a new frame is submitted to the worker.
+    async_detection: bool = False
+    detect_every_n: int = 1
 
 
 @dataclass(frozen=True, slots=True)

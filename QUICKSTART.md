@@ -91,6 +91,17 @@ uv run lowlatcv run --source data/b3d/videos/hwy00.mp4 --display \
   --num-classes 10 --tiles 2x2 --fps 0
 ```
 
+```bash
+# Decouple heavy detector from the per-frame critical path. The tracker
+# Kalman-propagates boxes between detection updates so playback stays at
+# source FPS even when the detector runs slower. Detection runs every Nth
+# frame in a worker thread.
+uv run lowlatcv run --source data/b3d/videos/hwy00.mp4 --display \
+  --detector onnx --weights data/models/yolov8n-visdrone-1280.onnx \
+  --num-classes 10 --imgsz 1280 \
+  --async-detection --detect-every-n 3
+```
+
 (`--tile-input-size` auto-snaps to the model's fixed imgsz, so you only need
 to pass it if the model was exported with `dynamic=True`.)
 
@@ -293,6 +304,8 @@ authoritative list.
 | `--tiles ROWSxCOLS`        | both  | tiled inference grid                              |
 | `--tile-overlap X`         | both  | fractional overlap [0, 0.95)                      |
 | `--tile-input-size N`      | both  | per-tile letterbox target                         |
+| `--async-detection`        | both  | detector runs on a worker thread (off crit path)  |
+| `--detect-every-n N`       | both  | submit a frame to async detector every N frames   |
 | `--vlm fake\|ollama\|none` | both  | VLM backend                                       |
 | `--vlm-model NAME`         | both  | Ollama model name                                 |
 | `--vlm-host URL`           | both  | Ollama base URL                                   |

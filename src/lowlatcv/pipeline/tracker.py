@@ -18,6 +18,9 @@ import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Protocol
 
+import numpy as np
+from numpy.typing import NDArray
+
 from lowlatcv.config import TrackerConfig
 from lowlatcv.models.frame import Detection, Frame, Track, TrackState
 
@@ -30,6 +33,71 @@ class Tracker(Protocol):
     async def setup(self) -> None: ...
     async def process(self, item: Frame) -> Frame: ...
     async def teardown(self) -> None: ...
+
+
+class _Kalman2D:
+    """Constant-velocity Kalman filter on an axis-aligned bbox.
+
+    State vector: ``[cx, cy, w, h, vx, vy, vw, vh]`` (8-state). Observation:
+    ``[cx, cy, w, h]`` (4-d). Process / measurement covariances scaled by
+    the box scale ``h`` so motion uncertainty is proportional to object size
+    (classic DeepSORT / SORT trick — prevents tiny boxes from getting
+    drowned by big residuals).
+    """
+
+    __slots__ = ("x", "P", "_F", "_H", "_Q_scale", "_R_scale")
+
+    def __init__(self, cx: float, cy: float, w: float, h: float) -> None:
+        self.x: NDArray[np.float64] = np.array([cx, cy, w, h, 0.0, 0.0, 0.0, 0.0], dtype=np.float64)
+        # initial state covariance — large for velocities, smaller for position
+        self.P: NDArray[np.float64] = np.diag([10.0, 10.0, 10.0, 10.0, 1e4, 1e4, 1e4, 1e4])
+        # constant-velocity transition
+        self._F: NDArray[np.float64] = np.eye(8, dtype=np.float64)
+        for i in range(4):
+            self._F[i, i + 4] = 1.0
+        # observation matrix: cx, cy, w, h directly observed
+        self._H: NDArray[np.float64] = np.zeros((4, 8), dtype=np.float64)
+        for i in range(4):
+            self._H[i, i] = 1.0
+        # noise scales (multiplied by max(h, 1) at update time)
+        self._Q_scale: float = 1.0 / 20.0
+        self._R_scale: float = 1.0 / 20.0
+
+    def predict(self) -> None:
+        self.x = self._F @ self.x
+        h_scale = max(self.x[3], 1.0)
+        Q = np.diag(
+            [
+                (self._Q_scale * h_scale) ** 2,
+                (self._Q_scale * h_scale) ** 2,
+                (self._Q_scale * h_scale) ** 2,
+                (self._Q_scale * h_scale) ** 2,
+                (self._Q_scale * h_scale * 0.5) ** 2,
+                (self._Q_scale * h_scale * 0.5) ** 2,
+                (self._Q_scale * h_scale * 0.5) ** 2,
+                (self._Q_scale * h_scale * 0.5) ** 2,
+            ]
+        )
+        self.P = self._F @ self.P @ self._F.T + Q
+
+    def update(self, cx: float, cy: float, w: float, h: float) -> None:
+        z = np.array([cx, cy, w, h], dtype=np.float64)
+        h_scale = max(self.x[3], 1.0)
+        R = np.diag([(self._R_scale * h_scale) ** 2] * 4)
+        y = z - self._H @ self.x
+        S = self._H @ self.P @ self._H.T + R
+        K = self.P @ self._H.T @ np.linalg.inv(S)
+        self.x = self.x + K @ y
+        I_KH = np.eye(8, dtype=np.float64) - K @ self._H
+        self.P = I_KH @ self.P
+
+    def bbox_xyxy(self) -> tuple[int, int, int, int]:
+        cx, cy, w, h = self.x[:4]
+        x1 = int(round(cx - w / 2))
+        y1 = int(round(cy - h / 2))
+        x2 = int(round(cx + w / 2))
+        y2 = int(round(cy + h / 2))
+        return x1, y1, x2, y2
 
 
 @dataclass(slots=True)
@@ -49,6 +117,7 @@ class _Lane:
     hits: int
     frames_since_match: int
     last_seen_frame: int
+    kalman: _Kalman2D
     history: list[tuple[int, int, int, int]] = field(default_factory=list)
 
 
@@ -67,6 +136,17 @@ class ByteTracker:
 
     async def process(self, item: Frame) -> Frame:
         self._frame_idx += 1
+
+        # Kalman predict step: roll every live lane forward by one frame so
+        # association uses the *expected* position, not the stale last
+        # observation. Tracks survive gaps without detection because their
+        # predicted bbox is what downstream stages read.
+        for lane in self._lanes:
+            if lane.state is TrackState.DEAD:
+                continue
+            lane.kalman.predict()
+            lane.bbox = lane.kalman.bbox_xyxy()
+
         dets = list(item.detections)
         high = [d for d in dets if d.score >= self._cfg.score_high_threshold]
         low = [d for d in dets if d.score < self._cfg.score_high_threshold]
@@ -109,14 +189,16 @@ class ByteTracker:
     async def teardown(self) -> None: ...
 
     def _on_match(self, lane: _Lane, det: Detection) -> None:
-        lane.bbox = det.bbox
+        cx, cy, w, h = _xyxy_to_cxcywh(det.bbox)
+        lane.kalman.update(cx, cy, w, h)
+        lane.bbox = lane.kalman.bbox_xyxy()
         lane.class_id = det.class_id
         lane.score = det.score
         lane.hits += 1
         lane.frames_since_match = 0
         lane.last_seen_frame = self._frame_idx
         lane.age += 1
-        lane.history.append(det.bbox)
+        lane.history.append(lane.bbox)
         if len(lane.history) > self._cfg.history_size:
             del lane.history[0]
 
@@ -140,6 +222,7 @@ class ByteTracker:
                 lane.state = TrackState.DEAD
 
     def _spawn(self, det: Detection) -> None:
+        cx, cy, w, h = _xyxy_to_cxcywh(det.bbox)
         lane = _Lane(
             track_id=self._next_id,
             bbox=det.bbox,
@@ -150,6 +233,7 @@ class ByteTracker:
             hits=1,
             frames_since_match=0,
             last_seen_frame=self._frame_idx,
+            kalman=_Kalman2D(cx, cy, w, h),
             history=[det.bbox],
         )
         self._next_id += 1
@@ -168,6 +252,11 @@ class ByteTracker:
             frames_since_match=lane.frames_since_match,
             history=tuple(lane.history),
         )
+
+
+def _xyxy_to_cxcywh(b: tuple[int, int, int, int]) -> tuple[float, float, float, float]:
+    x1, y1, x2, y2 = b
+    return ((x1 + x2) / 2.0, (y1 + y2) / 2.0, float(x2 - x1), float(y2 - y1))
 
 
 def _greedy_match(
