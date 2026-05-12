@@ -5,8 +5,11 @@
 populated. Strategy pattern: ``FakeDetector`` for deterministic tests,
 ``OnnxDetector`` for ONNX Runtime on any execution provider (CPU / CoreML /
 ROCm / MIGraphX / CUDA), ``CoreMLDetector`` for ``.mlpackage`` weights via
-``coremltools`` (Apple Silicon). Heavy backend imports are gated inside
-``setup`` so the wrong-platform import never runs.
+``coremltools`` (Apple Silicon), ``TiledOnnxDetector`` for SAHI-style
+tiled inference on small objects (e.g. aerial / drone footage where the
+model trained on COCO street-view scale otherwise sees a few-pixel car).
+Heavy backend imports are gated inside ``setup`` so the wrong-platform
+import never runs.
 """
 
 from __future__ import annotations
@@ -16,6 +19,7 @@ import dataclasses
 import logging
 from typing import TYPE_CHECKING, Any, Protocol
 
+import cv2
 import numpy as np
 from numpy.typing import NDArray
 
@@ -24,6 +28,7 @@ from lowlatcv.models.frame import Detection, Frame
 from lowlatcv.pipeline.detector_post import (
     decode_yolov8,
     filter_threshold_and_nms,
+    nms,
     unletterbox_xyxy,
 )
 
@@ -246,11 +251,174 @@ class CoreMLDetector:
         self._model = None
 
 
+class TiledOnnxDetector:
+    """SAHI-style tiled ONNX inference.
+
+    Slices ``Frame.image`` into ``tile_rows × tile_cols`` overlapping tiles,
+    letterboxes each tile to ``tile_input_size`` (square), runs ONNX inference
+    per tile, decodes + NMS in tile-local coords, shifts boxes back to the
+    original frame, then a final global NMS dedupes detections that cross
+    tile boundaries. Designed for footage where the trained-resolution
+    target (e.g. COCO street view) is much smaller than the tile-local view
+    — typical aerial / drone scenes where a car covers 5–10 px in a
+    whole-frame letterbox but 30–60 px in a 3×3 tile.
+
+    Ignores ``Frame.tensor`` and ``Frame.letterbox`` — works directly off
+    ``image`` so the Preprocess stage upstream is effectively a no-op when
+    this backend is selected.
+    """
+
+    name = "detector"
+
+    def __init__(self, cfg: DetectorConfig) -> None:
+        if cfg.weights is None:
+            raise ValueError("TiledOnnxDetector requires DetectorConfig.weights")
+        if cfg.tile_rows < 1 or cfg.tile_cols < 1:
+            raise ValueError("tile_rows and tile_cols must be >= 1")
+        if not (0.0 <= cfg.tile_overlap < 0.95):
+            raise ValueError("tile_overlap must be in [0.0, 0.95)")
+        self._cfg = cfg
+        self._session: Any = None
+        self._input_name: str = ""
+
+    async def setup(self) -> None:
+        import onnxruntime as ort
+
+        providers = _select_providers(ort, self._cfg.execution_provider)
+        loop = asyncio.get_running_loop()
+        self._session = await loop.run_in_executor(
+            None, lambda: ort.InferenceSession(self._cfg.weights, providers=providers)
+        )
+        self._input_name = self._session.get_inputs()[0].name
+        log.info(
+            "TiledOnnxDetector loaded weights=%s providers=%s tiles=%dx%d overlap=%.2f tile_input=%d",
+            self._cfg.weights,
+            providers,
+            self._cfg.tile_rows,
+            self._cfg.tile_cols,
+            self._cfg.tile_overlap,
+            self._cfg.tile_input_size,
+        )
+
+    async def process(self, item: Frame) -> Frame:
+        loop = asyncio.get_running_loop()
+        dets = await loop.run_in_executor(None, self._infer_all_tiles, item.image)
+        return dataclasses.replace(item, detections=dets)
+
+    def _infer_all_tiles(self, image: NDArray[np.uint8]) -> tuple[Detection, ...]:
+        H, W = image.shape[:2]
+        rows = self._cfg.tile_rows
+        cols = self._cfg.tile_cols
+        ov = self._cfg.tile_overlap
+        tile_h = H / rows
+        tile_w = W / cols
+        oy = int(round(tile_h * ov))
+        ox = int(round(tile_w * ov))
+
+        all_boxes: list[NDArray[np.float32]] = []
+        all_scores: list[NDArray[np.float32]] = []
+        all_cls: list[NDArray[np.int64]] = []
+
+        for r in range(rows):
+            for c in range(cols):
+                y1 = max(0, int(round(r * tile_h)) - (oy if r > 0 else 0))
+                y2 = min(H, int(round((r + 1) * tile_h)) + (oy if r < rows - 1 else 0))
+                x1 = max(0, int(round(c * tile_w)) - (ox if c > 0 else 0))
+                x2 = min(W, int(round((c + 1) * tile_w)) + (ox if c < cols - 1 else 0))
+                if y2 <= y1 or x2 <= x1:
+                    continue
+                tile = image[y1:y2, x1:x2]
+                tensor, lb = _letterbox_for_inference(tile, self._cfg.tile_input_size)
+                raw = self._session.run(None, {self._input_name: tensor})[0]
+                boxes, scores, class_ids = decode_yolov8(np.asarray(raw), self._cfg.num_classes)
+                b, s, cl = filter_threshold_and_nms(
+                    boxes,
+                    scores,
+                    class_ids,
+                    score_threshold=self._cfg.score_threshold,
+                    iou_threshold=self._cfg.nms_threshold,
+                    max_detections=self._cfg.max_detections,
+                )
+                if b.size == 0:
+                    continue
+                b = unletterbox_xyxy(b, letterbox_hw=lb, orig_hw=(y2 - y1, x2 - x1))
+                b[:, [0, 2]] += x1
+                b[:, [1, 3]] += y1
+                all_boxes.append(b)
+                all_scores.append(s)
+                all_cls.append(cl)
+
+        if not all_boxes:
+            return ()
+
+        merged_b = np.concatenate(all_boxes, axis=0)
+        merged_s = np.concatenate(all_scores, axis=0)
+        merged_c = np.concatenate(all_cls, axis=0)
+        keep = nms(merged_b, merged_s, iou_threshold=self._cfg.nms_threshold)
+        if keep.size > self._cfg.max_detections:
+            keep = keep[: self._cfg.max_detections]
+        return tuple(
+            Detection(
+                bbox=(int(x1), int(y1), int(x2), int(y2)),
+                score=float(merged_s[i]),
+                class_id=int(merged_c[i]),
+            )
+            for i in keep
+            for x1, y1, x2, y2 in (merged_b[i],)
+        )
+
+    async def teardown(self) -> None:
+        self._session = None
+
+
+def _select_providers(ort: Any, requested: str | None) -> list[str]:
+    available = set(ort.get_available_providers())
+    if requested is not None:
+        if requested not in available:
+            raise RuntimeError(
+                f"execution provider {requested!r} not available; available={sorted(available)}"
+            )
+        return (
+            [requested, "CPUExecutionProvider"]
+            if requested != "CPUExecutionProvider"
+            else [requested]
+        )
+    for candidate in (
+        "CoreMLExecutionProvider",
+        "ROCMExecutionProvider",
+        "MIGraphXExecutionProvider",
+        "CUDAExecutionProvider",
+    ):
+        if candidate in available:
+            return [candidate, "CPUExecutionProvider"]
+    return ["CPUExecutionProvider"]
+
+
+def _letterbox_for_inference(
+    tile: NDArray[np.uint8], target: int
+) -> tuple[NDArray[np.float32], tuple[int, int]]:
+    h, w = tile.shape[:2]
+    scale = min(target / w, target / h)
+    new_w = max(1, int(round(w * scale)))
+    new_h = max(1, int(round(h * scale)))
+    resized = cv2.resize(tile, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+    canvas = np.full((target, target, 3), 114, dtype=np.uint8)
+    top = (target - new_h) // 2
+    left = (target - new_w) // 2
+    canvas[top : top + new_h, left : left + new_w] = resized
+    rgb = cv2.cvtColor(canvas, cv2.COLOR_BGR2RGB)
+    arr = rgb.astype(np.float32, copy=False) / np.float32(255.0)
+    arr = np.transpose(arr, (2, 0, 1))[None]
+    return np.ascontiguousarray(arr), (target, target)
+
+
 def from_config(cfg: DetectorConfig) -> Detector:
     """Factory Method: select a detector backend from ``DetectorConfig.backend``."""
     backend = cfg.backend.lower()
     if backend == "fake":
         return FakeDetector(cfg)
+    if backend == "onnx-tiled":
+        return TiledOnnxDetector(cfg)
     if backend == "onnx":
         return OnnxDetector(cfg)
     if backend == "coreml":

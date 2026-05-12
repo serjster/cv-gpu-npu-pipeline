@@ -118,6 +118,15 @@ def _apply_vlm_overrides(
     return dataclasses.replace(cfg, vlm=v)
 
 
+def _apply_imgsz(cfg: PipelineConfig, imgsz: int | None) -> PipelineConfig:
+    if imgsz is None:
+        return cfg
+    return dataclasses.replace(
+        cfg,
+        preprocess=dataclasses.replace(cfg.preprocess, width=imgsz, height=imgsz),
+    )
+
+
 def _apply_detector_overrides(
     cfg: PipelineConfig,
     backend: str | None,
@@ -125,6 +134,10 @@ def _apply_detector_overrides(
     score_threshold: float | None,
     iou_threshold: float | None,
     execution_provider: str | None,
+    num_classes: int | None,
+    tiles: str | None,
+    tile_overlap: float | None,
+    tile_input_size: int | None,
 ) -> PipelineConfig:
     det = cfg.detector
     if backend is not None:
@@ -137,7 +150,29 @@ def _apply_detector_overrides(
         det = dataclasses.replace(det, nms_threshold=iou_threshold)
     if execution_provider is not None:
         det = dataclasses.replace(det, execution_provider=execution_provider)
+    if num_classes is not None:
+        det = dataclasses.replace(det, num_classes=num_classes)
+    if tiles is not None:
+        rows, cols = _parse_tiles(tiles)
+        det = dataclasses.replace(det, tile_rows=rows, tile_cols=cols)
+    if tile_overlap is not None:
+        det = dataclasses.replace(det, tile_overlap=tile_overlap)
+    if tile_input_size is not None:
+        det = dataclasses.replace(det, tile_input_size=tile_input_size)
     return dataclasses.replace(cfg, detector=det)
+
+
+def _parse_tiles(spec: str) -> tuple[int, int]:
+    parts = spec.lower().replace("×", "x").split("x")
+    if len(parts) != 2:
+        raise typer.BadParameter(f"--tiles must be ROWSxCOLS, got {spec!r}")
+    try:
+        rows, cols = int(parts[0]), int(parts[1])
+    except ValueError as e:
+        raise typer.BadParameter(f"--tiles must be integers, got {spec!r}") from e
+    if rows < 1 or cols < 1:
+        raise typer.BadParameter(f"--tiles dims must be >= 1, got {spec!r}")
+    return rows, cols
 
 
 @app.command()
@@ -179,6 +214,19 @@ def run(
     vlm_fake_latency: float | None = typer.Option(
         None, "--vlm-fake-latency", help="FakeVLM synthetic latency (s) for the no-impact proof"
     ),
+    imgsz: int | None = typer.Option(
+        None, "--imgsz", help="square detector input size (sets PreprocessConfig.width and height)"
+    ),
+    num_classes: int | None = typer.Option(
+        None, "--num-classes", help="detector class count (COCO=80, VisDrone=10)"
+    ),
+    tiles: str | None = typer.Option(
+        None, "--tiles", help="ROWSxCOLS tiled inference (e.g. 3x3); use --detector onnx-tiled"
+    ),
+    tile_overlap: float | None = typer.Option(None, "--tile-overlap"),
+    tile_input_size: int | None = typer.Option(
+        None, "--tile-input-size", help="per-tile letterbox target (default 640)"
+    ),
 ) -> None:
     """Run the pipeline end-to-end."""
     cfg = PipelineConfig.load(config)
@@ -195,11 +243,21 @@ def run(
         sink_cfg = dataclasses.replace(sink_cfg, vsync=True)
     cfg = dataclasses.replace(cfg, sink=sink_cfg)
     cfg = _apply_detector_overrides(
-        cfg, detector, weights, score_threshold, iou_threshold, execution_provider
+        cfg,
+        detector,
+        weights,
+        score_threshold,
+        iou_threshold,
+        execution_provider,
+        num_classes,
+        tiles,
+        tile_overlap,
+        tile_input_size,
     )
     cfg = _apply_vlm_overrides(
         cfg, vlm, vlm_model, vlm_host, vlm_prompt, vlm_cooldown, vlm_rate, vlm_fake_latency
     )
+    cfg = _apply_imgsz(cfg, imgsz)
     # Pacing: default on (real-time playback). --fps 0 disables. --fps N overrides.
     if fps is None:
         pace = True
@@ -232,6 +290,11 @@ def bench(
     vlm_cooldown: float | None = typer.Option(None, "--vlm-cooldown"),
     vlm_rate: float | None = typer.Option(None, "--vlm-rate"),
     vlm_fake_latency: float | None = typer.Option(None, "--vlm-fake-latency"),
+    imgsz: int | None = typer.Option(None, "--imgsz"),
+    num_classes: int | None = typer.Option(None, "--num-classes"),
+    tiles: str | None = typer.Option(None, "--tiles"),
+    tile_overlap: float | None = typer.Option(None, "--tile-overlap"),
+    tile_input_size: int | None = typer.Option(None, "--tile-input-size"),
 ) -> None:
     """Run benchmark mode and report latency. Sink is forced to null."""
     cfg = PipelineConfig.load(config)
@@ -239,11 +302,21 @@ def bench(
         cfg = dataclasses.replace(cfg, source=dataclasses.replace(cfg.source, uri=source))
     cfg = dataclasses.replace(cfg, sink=SinkConfig(kind="null"))
     cfg = _apply_detector_overrides(
-        cfg, detector, weights, score_threshold, iou_threshold, execution_provider
+        cfg,
+        detector,
+        weights,
+        score_threshold,
+        iou_threshold,
+        execution_provider,
+        num_classes,
+        tiles,
+        tile_overlap,
+        tile_input_size,
     )
     cfg = _apply_vlm_overrides(
         cfg, vlm, vlm_model, vlm_host, vlm_prompt, vlm_cooldown, vlm_rate, vlm_fake_latency
     )
+    cfg = _apply_imgsz(cfg, imgsz)
     limit = frames if frames > 0 else None
     report = asyncio.run(_drive(cfg, limit, report_format))
     if report_path is not None:

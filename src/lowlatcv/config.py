@@ -41,6 +41,11 @@ class DetectorConfig:
     max_detections: int = 100
     execution_provider: str | None = None
     num_classes: int = 80
+    # Tiled-inference (SAHI-style) knobs. tile_rows/cols = 1 disables tiling.
+    tile_rows: int = 1
+    tile_cols: int = 1
+    tile_overlap: float = 0.2
+    tile_input_size: int = 640
 
 
 @dataclass(frozen=True, slots=True)
