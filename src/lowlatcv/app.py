@@ -1,69 +1,23 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import logging
-import time
 from pathlib import Path
 from typing import Any
 
-import numpy as np
 import typer
-from numpy.typing import NDArray
 
-from lowlatcv.config import PipelineConfig
+from lowlatcv.config import PipelineConfig, SinkConfig
 from lowlatcv.metrics.reporter import CSVReporter, JSONReporter, Reporter, TableReporter
 from lowlatcv.metrics.tracer import Tracer
-from lowlatcv.models.frame import Frame
+from lowlatcv.pipeline import sink as sink_module
+from lowlatcv.pipeline import source as source_module
+from lowlatcv.pipeline.preprocess import Preprocess
 from lowlatcv.pipeline.runner import Pipeline
-from lowlatcv.pipeline.stage import EOF
 
 log = logging.getLogger(__name__)
 app = typer.Typer(no_args_is_help=True, add_completion=False)
-
-
-class _StubSource:
-    name = "source"
-
-    def __init__(self, frames: int, height: int, width: int) -> None:
-        self._frames = frames
-        self._height = height
-        self._width = width
-        self._i = 0
-
-    async def setup(self) -> None: ...
-
-    async def process(self, item: Any) -> Any:
-        if self._i >= self._frames:
-            return EOF
-        image: NDArray[np.uint8] = np.zeros((self._height, self._width, 3), dtype=np.uint8)
-        f = Frame(id=self._i, timestamp_ns=time.perf_counter_ns(), image=image)
-        self._i += 1
-        return f
-
-    async def teardown(self) -> None: ...
-
-
-class _Passthrough:
-    def __init__(self, name: str) -> None:
-        self.name = name
-
-    async def setup(self) -> None: ...
-
-    async def process(self, item: Frame) -> Frame:
-        return item
-
-    async def teardown(self) -> None: ...
-
-
-class _NullSink:
-    name = "sink"
-
-    async def setup(self) -> None: ...
-
-    async def process(self, item: Frame) -> None:
-        return None
-
-    async def teardown(self) -> None: ...
 
 
 def _make_reporter(fmt: str) -> Reporter:
@@ -76,23 +30,24 @@ def _make_reporter(fmt: str) -> Reporter:
     raise typer.BadParameter(f"unknown report format: {fmt}")
 
 
-def _build_stub_pipeline(cfg: PipelineConfig, tracer: Tracer, frames: int) -> Pipeline:
-    stages: list[Any] = [
-        _StubSource(frames=frames, width=cfg.preprocess.width, height=cfg.preprocess.height),
-        _Passthrough("preprocess"),
-        _Passthrough("detector"),
-        _Passthrough("tracker"),
-        _Passthrough("overlay"),
-        _NullSink(),
-    ]
+def build_pipeline(
+    cfg: PipelineConfig,
+    tracer: Tracer,
+    frame_limit: int | None = None,
+) -> Pipeline:
+    """Wire Source → Preprocess → Sink. Real CV stages land in phases 3+."""
+    source = source_module.from_uri(cfg.source.uri, cfg.source, frame_limit=frame_limit)
+    preprocess = Preprocess(cfg.preprocess)
+    sink = sink_module.from_config(cfg.sink)
+    stages: list[Any] = [source, preprocess, sink]
     return Pipeline(stages, tracer, queue_size=cfg.queue_size)
 
 
-async def _drive(cfg: PipelineConfig, frames: int, fmt: str) -> str:
+async def _drive(cfg: PipelineConfig, frame_limit: int | None, fmt: str) -> str:
     tracer = Tracer()
     reporter = _make_reporter(fmt)
     tracer.subscribe(reporter)
-    pipeline = _build_stub_pipeline(cfg, tracer, frames=frames)
+    pipeline = build_pipeline(cfg, tracer, frame_limit=frame_limit)
     await pipeline.run()
     return reporter.render()
 
@@ -101,13 +56,25 @@ async def _drive(cfg: PipelineConfig, frames: int, fmt: str) -> str:
 def run(
     source: str | None = typer.Option(None, help="video source URI / device index / RTSP URL"),
     config: Path | None = typer.Option(None, help="YAML config overlay"),
-    frames: int = typer.Option(10, help="stop after N frames (phase-1 stub)"),
-    display: bool = typer.Option(False, help="show display window (phase-2)"),
+    frames: int = typer.Option(0, help="stop after N frames (0 = run to EOF)"),
+    display: bool = typer.Option(False, help="show display window"),
+    sink: str | None = typer.Option(None, help="sink kind: display / null / file"),
+    output: Path | None = typer.Option(None, help="file sink path"),
 ) -> None:
-    """Run the pipeline. Phase 1: passthrough stub."""
+    """Run the pipeline end-to-end."""
     cfg = PipelineConfig.load(config)
-    typer.echo("phase-1: stub pipeline (real stages land in phase 2+)")
-    report = asyncio.run(_drive(cfg, frames, cfg.metrics.format))
+    if source is not None:
+        cfg = dataclasses.replace(cfg, source=dataclasses.replace(cfg.source, uri=source))
+    sink_cfg = cfg.sink
+    if display:
+        sink_cfg = dataclasses.replace(sink_cfg, kind="display")
+    if sink is not None:
+        sink_cfg = dataclasses.replace(sink_cfg, kind=sink)  # type: ignore[arg-type]
+    if output is not None:
+        sink_cfg = dataclasses.replace(sink_cfg, output=str(output))
+    cfg = dataclasses.replace(cfg, sink=sink_cfg)
+    limit = frames if frames > 0 else None
+    report = asyncio.run(_drive(cfg, limit, cfg.metrics.format))
     typer.echo(report)
 
 
@@ -119,9 +86,13 @@ def bench(
     report_format: str = typer.Option("table", "--report-format"),
     report_path: Path | None = typer.Option(None, "--report-path"),
 ) -> None:
-    """Run benchmark mode and report latency."""
+    """Run benchmark mode and report latency. Sink is forced to null."""
     cfg = PipelineConfig.load(config)
-    report = asyncio.run(_drive(cfg, frames, report_format))
+    if source is not None:
+        cfg = dataclasses.replace(cfg, source=dataclasses.replace(cfg.source, uri=source))
+    cfg = dataclasses.replace(cfg, sink=SinkConfig(kind="null"))
+    limit = frames if frames > 0 else None
+    report = asyncio.run(_drive(cfg, limit, report_format))
     if report_path is not None:
         report_path.write_text(report)
         typer.echo(f"wrote report → {report_path}")
