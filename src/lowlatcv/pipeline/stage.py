@@ -1,3 +1,14 @@
+"""Stage protocol + ``StageRunner`` pull/process/push loop + ``EOF`` sentinel.
+
+``Stage[InT, OutT]`` is the structural contract every stage conforms to
+(``name``, ``setup``, ``process``, ``teardown``). ``StageRunner`` drives the
+loop: pulls an item from the input queue (or produces in source mode with
+``in_q=None``), wraps ``process`` in a tracer span tagged with queue depth,
+and broadcasts the result to its output queues. The shared ``EOF`` sentinel
+propagates downstream so each stage drains cleanly without explicit
+signalling.
+"""
+
 from __future__ import annotations
 
 import asyncio

@@ -1,3 +1,12 @@
+"""Typer CLI entry point and pipeline wiring (Dependency Injection root).
+
+Exposes ``lowlatcv run`` and ``lowlatcv bench`` subcommands, builds a
+``Pipeline`` for the active ``PipelineConfig`` via :func:`build_pipeline`
+(Source → Preprocess → Sink today; detector / tracker / overlay / VLM slot
+in here as later phases land), and drives it on the asyncio event loop with
+a ``Tracer`` and a chosen ``Reporter``.
+"""
+
 from __future__ import annotations
 
 import asyncio

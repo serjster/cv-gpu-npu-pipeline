@@ -1,3 +1,11 @@
+"""Span Observer subscribers that render per-stage percentile snapshots.
+
+``Reporter`` is the base aggregator (``emit`` collects spans, ``snapshot``
+returns per-stage ``Percentiles``). ``TableReporter`` / ``JSONReporter`` /
+``CSVReporter`` are the three output formats picked by ``--report-format``
+or ``MetricsConfig.format``.
+"""
+
 from __future__ import annotations
 
 import csv

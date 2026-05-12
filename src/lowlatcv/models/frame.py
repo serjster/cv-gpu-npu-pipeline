@@ -1,3 +1,12 @@
+"""Per-frame value objects: ``Frame``, ``Detection``, ``Track``.
+
+``Frame`` carries the raw image (HxWx3 uint8 BGR) and an optional
+preprocessed tensor. ``Detection`` is what the detector emits; ``Track``
+is what the tracker emits after assigning persistent IDs. All three are
+``@dataclass(frozen=True, slots=True)`` so they can cross stage queues
+without surprises.
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass

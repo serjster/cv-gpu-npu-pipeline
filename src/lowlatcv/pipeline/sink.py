@@ -1,3 +1,13 @@
+"""Frame sinks: ``FrameSink`` Protocol + cv2-backed adapters + kind factory.
+
+``NullSink`` drops frames (bench mode), ``DisplaySink`` calls ``cv2.imshow``
+inline on the main thread (mandatory on macOS — never move it to a worker),
+and ``FileSink`` adapts ``cv2.VideoWriter`` (ffmpeg-pipe backend deferred to
+a later phase). ``from_config(cfg)`` is the Factory Method that selects a
+backend from ``SinkConfig.kind`` and is also surfaced as
+``FrameSink.from_config`` on the Protocol class for ergonomics.
+"""
+
 from __future__ import annotations
 
 import logging

@@ -1,3 +1,12 @@
+"""``Preprocess`` stage: letterbox resize + BGR→RGB + normalise + NCHW pack.
+
+Produces a new ``Frame`` with the preprocessed ``tensor`` attached and
+leaves the original ``image`` intact for the overlay stage to draw on
+later. Transform runs on the default executor so the event loop stays
+free. FPGA equivalent: Vitis Vision ``resize`` + ``cvtColor`` +
+``convertTo`` chained over AXI-Stream with no DDR round-trip.
+"""
+
 from __future__ import annotations
 
 import asyncio

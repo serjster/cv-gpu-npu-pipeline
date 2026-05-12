@@ -1,3 +1,11 @@
+"""VLM value objects: ``Caption`` results and ``CaptionRequest`` jobs.
+
+Used by the VLM stage (off the per-frame critical path). The tracker emits a
+``CaptionRequest`` on first sighting of a new track; the VLM worker posts
+``Caption`` results into a shared map keyed by ``track_id`` for the overlay
+stage to render.
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass

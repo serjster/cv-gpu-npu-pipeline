@@ -1,3 +1,15 @@
+"""Frame sources: ``FrameSource`` Protocol + cv2-backed adapters + URI factory.
+
+``FileSource`` and ``WebcamSource`` are Adapters around ``cv2.VideoCapture``
+running each blocking ``.read()`` on the asyncio default executor so the
+event loop stays free to drive downstream stages. ``from_uri(uri, cfg,
+frame_limit)`` is the Factory Method that picks the right backend from the
+URI scheme (``file://`` / bare path → file; ``webcam:N`` / bare digit →
+webcam; ``rtsp://`` / ``http(s)://`` / ``udp://`` / ``tcp://`` → network via
+VideoCapture). The same factory is also exposed as ``FrameSource.from_uri``
+on the Protocol class for ergonomics.
+"""
+
 from __future__ import annotations
 
 import asyncio

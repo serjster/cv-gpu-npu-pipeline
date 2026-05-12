@@ -1,3 +1,12 @@
+"""Pipeline configuration: frozen dataclasses + YAML overlay + env override loader.
+
+Defines ``PipelineConfig`` and one sub-config per stage (source, preprocess,
+detector, tracker, vlm, overlay, sink, metrics) plus a ``profile`` switch
+that selects between the macOS and Linux/AMD runtime profiles. Values come
+from defaults, optional YAML overlay (``--config``), then ``LOWLATCV_*``
+environment overrides (e.g. ``LOWLATCV_SOURCE__URI=...``).
+"""
+
 from __future__ import annotations
 
 import os

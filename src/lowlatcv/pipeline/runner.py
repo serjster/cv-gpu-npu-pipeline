@@ -1,3 +1,13 @@
+"""``Pipeline`` Facade: graph construction + lifecycle management.
+
+Builds the inter-stage ``asyncio.Queue``\\s (default ``maxsize=2`` for the
+AXI-Stream-equivalent back-pressure), runs ``setup`` forward, spawns one
+``StageRunner`` task per stage, awaits completion (cancelling siblings on
+first exception), and runs ``teardown`` in reverse order. Single Facade
+entry points: ``start``, ``await_completion``, ``stop``, and the
+all-in-one ``run``.
+"""
+
 from __future__ import annotations
 
 import asyncio

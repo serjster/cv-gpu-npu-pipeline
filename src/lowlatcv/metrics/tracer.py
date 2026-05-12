@@ -1,3 +1,11 @@
+"""Stage-latency tracer: ``Span`` records + ``Tracer.span()`` context manager.
+
+The ``Tracer`` is the Observer hub: every stage wraps its work in
+``tracer.span(self.name, queue_depth_in=...)`` and the resulting ``Span``
+fans out to subscribed ``SpanSink``\\s (Reporters) and into a per-stage
+sliding-window buffer used by ``Tracer.stats()`` to compute p50/p90/p99/max.
+"""
+
 from __future__ import annotations
 
 import contextlib
