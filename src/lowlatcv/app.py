@@ -45,22 +45,38 @@ def build_pipeline(
     cfg: PipelineConfig,
     tracer: Tracer,
     frame_limit: int | None = None,
+    raw: bool = False,
 ) -> Pipeline:
-    """Wire Source → Preprocess → Detector → Overlay → Sink."""
+    """Wire the stage graph.
+
+    Full graph: Source → Preprocess → Detector → Overlay → Sink.
+    ``raw=True``: Source → Sink only — pure decode-and-display passthrough,
+    no inference, no copy beyond what cv2 already does. Useful to baseline
+    the host's video-decode + display cost before any CV work lands on
+    the critical path.
+    """
     source = source_module.from_uri(cfg.source.uri, cfg.source, frame_limit=frame_limit)
+    sink = sink_module.from_config(cfg.sink)
+    if raw:
+        stages: list[Any] = [source, sink]
+        return Pipeline(stages, tracer, queue_size=cfg.queue_size)
     preprocess = Preprocess(cfg.preprocess)
     detector = detector_module.from_config(cfg.detector)
     overlay = Overlay(cfg.overlay)
-    sink = sink_module.from_config(cfg.sink)
-    stages: list[Any] = [source, preprocess, detector, overlay, sink]
+    stages = [source, preprocess, detector, overlay, sink]
     return Pipeline(stages, tracer, queue_size=cfg.queue_size)
 
 
-async def _drive(cfg: PipelineConfig, frame_limit: int | None, fmt: str) -> str:
+async def _drive(
+    cfg: PipelineConfig,
+    frame_limit: int | None,
+    fmt: str,
+    raw: bool = False,
+) -> str:
     tracer = Tracer()
     reporter = _make_reporter(fmt)
     tracer.subscribe(reporter)
-    pipeline = build_pipeline(cfg, tracer, frame_limit=frame_limit)
+    pipeline = build_pipeline(cfg, tracer, frame_limit=frame_limit, raw=raw)
     await pipeline.run()
     return reporter.render()
 
@@ -104,6 +120,11 @@ def run(
         "--execution-provider",
         help="onnxruntime EP, e.g. CoreMLExecutionProvider / ROCMExecutionProvider / CPUExecutionProvider",
     ),
+    raw: bool = typer.Option(
+        False,
+        "--raw",
+        help="passthrough mode: Source → Sink only, no preprocess/detector/overlay (baseline decode+display cost).",
+    ),
 ) -> None:
     """Run the pipeline end-to-end."""
     cfg = PipelineConfig.load(config)
@@ -121,7 +142,7 @@ def run(
         cfg, detector, weights, score_threshold, iou_threshold, execution_provider
     )
     limit = frames if frames > 0 else None
-    report = asyncio.run(_drive(cfg, limit, cfg.metrics.format))
+    report = asyncio.run(_drive(cfg, limit, cfg.metrics.format, raw=raw))
     typer.echo(report)
 
 
