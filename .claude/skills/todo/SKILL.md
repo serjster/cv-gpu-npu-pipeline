@@ -33,4 +33,4 @@ Remove all completed (`[x]`) items.
 
 ## TODO File Location
 
-`TODO.md` at the project root (`TODO.md`).
+`TODO.md` at the project root.
