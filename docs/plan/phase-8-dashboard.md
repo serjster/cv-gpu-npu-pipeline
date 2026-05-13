@@ -1,5 +1,14 @@
 # Phase 8 — Dashboard & control UI
 
+**Status update (2026-05-13):** Native debug UI shipped ahead of the web path.
+``DebugWindow`` (pygame `_sdl2`, separate window from the scene) renders live
+per-stage latency, track state counts, AsyncDetector counters + staleness, and
+pause/step controls. See `phase-3a-quality.md` for details. The web dashboard
+below is still on the roadmap but lower priority while we iterate on
+detection/tracking quality with the native HUD.
+
+
+
 **Goal:** A live operator surface — annotated video stream + prompt input for the VLM query + per-stage metrics + start/stop and source-selection controls.
 
 ## Decision (must resolve before tasks)

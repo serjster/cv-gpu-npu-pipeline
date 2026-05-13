@@ -34,16 +34,23 @@ The Strategy pattern (`Detector`, `VLM`, `FrameSource`, `FrameSink`) keeps the p
 
 | #  | Phase                                                                  | Status |
 |----|------------------------------------------------------------------------|--------|
-| 1  | [Foundation & scaffolding](plan/phase-1-foundation.md)                 | closed |
-| 2  | [Source & sink (end-to-end skeleton)](plan/phase-2-source-sink.md)     | closed |
-| 3  | [Object detection](plan/phase-3-detection.md)                          | closed |
-| 4  | [Tracking](plan/phase-4-tracking.md)                                   | closed |
-| 5  | [VLM async (GPU/ROCm via Ollama)](plan/phase-5-vlm-async.md)           | closed |
-| 6  | [VLM on NPU via FastFlowLM](plan/phase-6-vlm-npu.md)                   | in-progress |
-| 7  | [Queryable VLM (user prompts steer focus)](plan/phase-7-query.md)      | open   |
-| 8  | [Dashboard & control UI](plan/phase-8-dashboard.md)                    | open   |
-| 9  | [Performance hardening](plan/phase-9-performance.md)                   | open   |
-| 10 | [NPU lower-level exploration (stretch)](plan/phase-10-npu-lowlevel.md) | open   |
+| #  | Phase                                                                  | Status      |
+|----|------------------------------------------------------------------------|-------------|
+| 1  | [Foundation & scaffolding](plan/phase-1-foundation.md)                 | closed      |
+| 2  | [Source & sink (end-to-end skeleton)](plan/phase-2-source-sink.md)     | closed      |
+| 3  | [Object detection](plan/phase-3-detection.md)                          | closed (+ a) |
+| 3a | [Detection / tracking quality](plan/phase-3a-quality.md)               | in-progress |
+| 4  | [Tracking](plan/phase-4-tracking.md)                                   | closed (+ 3a) |
+| 5  | [VLM async (GPU/ROCm via Ollama)](plan/phase-5-vlm-async.md)           | closed      |
+| 6  | [VLM on NPU via FastFlowLM](plan/phase-6-vlm-npu.md)                   | deferred (Linux profile) |
+| 7  | [Queryable VLM (user prompts steer focus)](plan/phase-7-query.md)      | open        |
+| 8  | [Dashboard & control UI](plan/phase-8-dashboard.md)                    | in-progress (debug HUD shipped) |
+| 9  | [Performance hardening](plan/phase-9-performance.md)                   | in-progress (measurement rig shipped) |
+| 10 | [NPU lower-level exploration (stretch)](plan/phase-10-npu-lowlevel.md) | open        |
+
+**Status legend extensions:**
+- *deferred (Linux profile)* — phase is scoped to a runtime profile we are not currently on. Re-open when work shifts to that profile.
+- *in-progress (X shipped)* — phase doc has tasks ticked but more remain. Sub-area parenthesised so the next picker knows what's done.
 
 ## Cross-phase invariants
 

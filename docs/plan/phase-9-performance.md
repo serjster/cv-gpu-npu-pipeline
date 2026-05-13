@@ -1,5 +1,15 @@
 # Phase 9 — Performance hardening
 
+**Status update (2026-05-13):** measurement rig is shipped — JSONL export
+on every run, heavy reference builder (yolov8x + yolov11x consensus), per-
+class P/R/F1 diff against the reference, automated tracker-knob sweep
+(``sweep_tracker.py``). The baseline table below is still empty because
+we have not yet committed to a fixed fixture and baseline json — once
+detection/tracking quality stops moving daily, snapshot then re-run after
+each opt change. See `phase-3a-quality.md` for the running list.
+
+
+
 **Goal:** Squeeze the pipeline. Get to the FPS / latency envelope that justifies the FPGA comparison. Optimisation is **profile-driven** — the tracer's percentile table tells us where to look; never optimise without a measurement showing the cost first.
 
 **Design patterns introduced:**

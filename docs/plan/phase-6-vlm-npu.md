@@ -1,5 +1,16 @@
 # Phase 6 — VLM on platform NPU (XDNA / ANE)
 
+**Status (2026-05-13): deferred.** Work has been on the macOS profile for
+detection/tracking quality + debug tooling. The Linux + AMD profile (where
+FastFlowLM on the XDNA NPU lives) hasn't been picked up. Re-open this phase
+when the work shifts to a Linux machine, OR when the macOS-side ANE VLM
+becomes the active sub-track. The macOS half (`CoreMLVLM` on ANE) is also
+deferred because phase 5's Ollama backend has been good enough for the
+current demo + the immediate quality issues live on the detection /
+tracking side, not the captioning side.
+
+
+
 **Goal:** Run the VLM on the dedicated neural accelerator native to each runtime profile, alongside the Ollama/GPU backend from Phase 5. Validate end-to-end on the accelerator class that the FPGA reference architecture targets.
 
 - **Linux + AMD profile:** FastFlowLM on the Ryzen AI NPU (XDNA).
