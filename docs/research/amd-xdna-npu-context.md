@@ -738,10 +738,69 @@ Combined, NPU latency parity or better is reachable.
 1. ✅ Multi-block fused chain proves out
 2. ✅ **3D DMA descriptor fix — YOLO sizes work on NPU**
 3. ✅ **Scale chain to 8 columns / 8 blocks**
-4. ⬜ Correctness validation — port torch reference. ~1 day.
-5. ⬜ Weights-resident-across-frames structural change. ~3-5 days.
-6. ⬜ Multi-frame pipelining. ~3-5 days.
-7. ⬜ `NPUConvDetector` backend in the project pipeline. ~2 days.
+4. 🟡 Correctness validation — structural check passes (no NaN/Inf,
+   valid output range, kernel completes cleanly); **numerical
+   correctness vs torch reference is NOT yet validated.** See finding
+   below.
+5. ⬜ DataShaper integration + correctness validation. ~1 day.
+6. ⬜ Weights-resident-across-frames structural change. ~3-5 days.
+7. ⬜ Multi-frame pipelining. ~3-5 days.
+8. ⬜ `NPUConvDetector` backend in the project pipeline. ~2 days.
+
+### Critical correctness finding — 2026-05-13
+
+The 8-column chain produces an **all-zero output** with raw random
+inputs. Investigation shows the AIE conv kernels expect specific
+packed memory layouts:
+
+- **Input** must be `YCXC8` (channel-tiled: Y, C/8, X, C8) — not the
+  raw `(H, W, C)` we feed today.
+- **Weights** must be `OIYXI8O8` (output-input-spatial-tile).
+- **Scale RTPs** come from a `combined_scale = -log2(input_scale ×
+  weight_scale / output_scale)` formula that depends on the calibration
+  of the upstream layer.
+
+AMD's reference test uses `aie.utils.ml.DataShaper.reorder_mat()` to
+transform `(N, C, H, W)` tensors into the kernel's expected layout
+*before* loading the NPU buffer. We were feeding raw bytes that the
+kernel reads with the wrong stride pattern → accumulator + post-shift
+clamps to zero.
+
+**What this means:**
+
+- The latency numbers (985 μs for 8-block @ 40×40×128, 397 μs/block
+  scaling, 373 GFLOPS) are **valid as throughput-of-work-moved**.
+  The DMA traffic, kernel invocations, locks, mem-tile handoffs all
+  actually happen and burn the time we measured.
+- The numerical outputs are **not** valid — the chain hasn't been
+  proven to compute the bottleneck function correctly with our inputs.
+- **The architectural conclusion still stands.** Per-block latency
+  dropping 4× as chain depth grows (489 → 123 μs) is observed
+  hardware-level behaviour driven by on-chip residency. That doesn't
+  change when we wire up DataShaper — it just means the bytes flowing
+  through the chain will then be meaningful too.
+
+**Next step (priority): wire DataShaper into the test harness.** Concrete
+steps:
+
+1. Build NCHW input → `YCXC8` reorder for the activation buffer.
+2. Build OIYX weight set → `OIYXI8O8` reorder for the weights buffer.
+3. Compute scale RTPs from a chosen quantization plan (start with all
+   layer scales = 0.5 to match AMD's reference).
+4. After the run, reverse-reorder the output (`YCXD → CYX`) and divide
+   by the final ReLU scale.
+5. Compare against a torch reference of the bottleneck chain run with
+   the same quantization scheme.
+
+Once that's done, the perf numbers will be both **fast** and
+**correct**, and we can confidently move on to weight-residency and
+multi-frame pipelining.
+
+This is the right kind of finding to surface — better to discover the
+correctness gap before investing days in additional optimization passes
+that would compound on top of broken output. The NPU hardware works;
+the chain plumbing works; the test rig needs to feed it the layouts it
+expects.
 
 **Setup recipe** (full reproduction):
 
