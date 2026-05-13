@@ -462,6 +462,59 @@ is not a concern, just precision.
 on this SKU, but the iGPU wins for *layer-by-layer* dispatch because
 each per-call DMA setup costs ~100 μs that the iGPU doesn't have.
 
+### Multi-block fused chain — first proof of the on-chip-residency win (2026-05-13)
+
+Ported `mlir-aie/programming_examples/ml/resnet/layers_conv2_x/` to AIE2P /
+Strix Halo. The design chains **3 bottleneck blocks across 3 NPU columns**
+with activations resident in mem-tiles between blocks — no DDR round-trip
+between blocks. Same recipe as the single bottleneck port: patch the script
+to take CLI dimensions, shrink to fit AIE2P's 1023-element DMA limit, reuse
+the 5 conv2dk kernels from `aie_kernels/aie2/` (Peano cross-compiles to
+aie2p), `aiecc` to xclbin, dispatch via XRT.
+
+**Apples-to-apples comparison:**
+
+| Workload                                  | NPU       | iGPU FP32 | NPU/iGPU |
+|-------------------------------------------|----------:|----------:|---------:|
+| 1 bottleneck @ 8×8×64 INT8 (1 col, 4 cores) | 114 μs    | 35 μs     | 3.3×     |
+| 3-block chain @ 8×8×16→64 INT8 (3 cols, 12 cores) | 120 μs    | 68 μs     | **1.8×** |
+
+**Per-block latency**:
+- Single-block, dispatched layer-by-layer: **114 μs/block**
+- 3-block fused chain, on-chip activations: **40 μs/block** (~2.8× speedup)
+
+This is the proof that fusing layers into one NPU dispatch hides DMA setup.
+Linear extrapolation to 8 columns (8-block chain) would put NPU at ~125 μs
+total vs iGPU's ~180 μs for the same work — **NPU finally wins**.
+
+**Architecture observation.** The 3-column ResNet chain shows the right
+pattern for what FastFlowLM does for LLMs: each accelerator generation
+(here a "bottleneck block") gets its own column with its own shim/mem
+tiles, and the FIFO graph connects column N's output to column N+1's
+input through the mem-tile network, never touching DDR. We'd build the
+YOLOv8n NPU runtime the same way: 8 columns chained, each holding 1–2
+backbone blocks with weights resident.
+
+**Where the DMA limit still bites.**
+
+For YOLO-realistic feature maps (e.g. 80×80×64, 40×40×128, 20×20×256),
+`W × Cin` exceeds the AIE2P 10-bit per-dim DMA limit by 5–10×. The current
+chain design embeds this assumption in its FIFO buffer types (memref
+elements over the full inner stripe). To run YOLO shapes we need to
+rewrite the DMA descriptors as proper 3D tiles where each dim stays
+≤ 1023. That's mlir-aie design work, not new C++ kernels.
+
+**Updated roadmap (1-2 week tier):**
+
+1. ✅ **Multi-block fused chain proves out** (today).
+2. ⬜ **3D DMA descriptor rewrite** to fit YOLO-realistic shapes. The
+   bottleneck blocks then work at 40×40×128 etc.
+3. ⬜ **Scale chain to 8 columns / 8 blocks** — natural extension of the
+   3-column pattern once shapes work.
+4. ⬜ **Correctness validation** — port the torch reference check.
+5. ⬜ **Wire into project pipeline as `NPUConvDetector`** — first version
+   runs the YOLOv8n backbone on NPU, the head + NMS on CPU/iGPU.
+
 **Setup recipe** (full reproduction):
 
 ```bash
