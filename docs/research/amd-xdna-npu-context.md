@@ -655,11 +655,48 @@ working at small sizes.
 
 1. ✅ Multi-block fused chain proves out (3 cols, small shapes)
 2. ✅ **3D DMA descriptor rewrite — YOLO sizes work on NPU**
-3. ⬜ Scale chain to 8 columns / 8 blocks — currently the script hardcodes
-   per-column tile/RTP names, needs refactor. Mechanical work, ~1 day.
+3. 🟡 Scale chain to 8 columns / 8 blocks — WIP (resnet_8col.py); n_cols=3
+   path validated, 4-col attempt compiles but fails mlir-aie verification
+   with "producer port of objectFifo accessed by core running on
+   non-producer tile". The col-3 tile assignment for odd columns
+   (bottom-up direction) has subtle constraints — the kernel-tile +
+   fifo-producer mapping needs to match for both core and fifo
+   declarations. ~1 day of focused tracing.
 4. ⬜ Correctness validation — port torch reference. ~1 day.
 5. ⬜ Weights-resident-across-frames structural change.
 6. ⬜ `NPUConvDetector` backend in the project pipeline.
+
+### 8-column scaling — partial progress (2026-05-13)
+
+`resnet_8col.py` lays out the n_cols-parametric structure for the
+straightforward bits:
+
+- `shims`, `mems`, `cores`, `rtp` are built as n_cols-length 2D arrays
+- `conv1_kernels`, `conv3_kernels`, `wts_sizes`, `layer1_wts_sizes`,
+  etc. extend with `... + [...] * (n_cols - 1)` patterns
+- `wts_sub_fifos = [[] for _ in range(n_cols)]` instead of literal `[[],[],[]]`
+- `conv3_out_fifos = [act1_fifos[i+1] for i in range(n_cols-1)] + [outOFL2L3]`
+- `wts_tasks` built in a loop with `dma_start_task(act1_0_task, *wts_tasks, out_task)`
+- Column 3 RTP buffers + tile declarations added, mirroring col 1's
+  bottom-up pattern
+
+The blocker at n_cols=4: the **kernel-core-to-fifo binding for col 3**
+fails verification. The existing 3-column design ships specific
+hand-tuned tile assignments for each fifo's producer and each core's
+location — they have to be self-consistent across the FIFO graph. The
+col-3 declarations look right in isolation but don't satisfy whatever
+constraint the upstream design assumes for inter-column data flow
+direction.
+
+Next steps when picking this up:
+- Trace exactly which fifo says "producer is tile X" and which core
+  declares itself on tile X — they must agree
+- The error message points to one specific aie.core op (line 851 in the
+  generated MLIR); identify which kernel call is the producer and
+  what fifo it's writing into
+- Likely fix is either swapping the direction of col 3 (top-down vs
+  bottom-up) or adjusting which rtp[i][j] index maps to which cores[i][j]
+  tile
 
 **Setup recipe** (full reproduction):
 
