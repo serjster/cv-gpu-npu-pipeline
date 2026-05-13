@@ -1,13 +1,26 @@
 # Phase 6 — VLM on platform NPU (XDNA / ANE)
 
-**Status (2026-05-13): deferred.** Work has been on the macOS profile for
-detection/tracking quality + debug tooling. The Linux + AMD profile (where
-FastFlowLM on the XDNA NPU lives) hasn't been picked up. Re-open this phase
-when the work shifts to a Linux machine, OR when the macOS-side ANE VLM
-becomes the active sub-track. The macOS half (`CoreMLVLM` on ANE) is also
-deferred because phase 5's Ollama backend has been good enough for the
-current demo + the immediate quality issues live on the detection /
-tracking side, not the captioning side.
+**Status (2026-05-13): Linux track in-progress (FastFlowLMVLM backend
+shipped); macOS track deferred.** Work shifted to Linux when the project
+came up on the Strix Halo box. FastFlowLM is wired in as a sibling backend
+to OllamaVLM. The proprietary-kernel constraints from the research doc
+remain — only model families FLM ships kernels for are reachable today
+(no LFM2.5-VL on NPU yet; see `docs/research/fastflowlm.md` §6 for the
+"Case B" port cost). macOS ANE half stays deferred — phase 5's Ollama-Metal
+is currently good enough for the demo.
+
+## Resolution log
+
+- **Linux backend choice:** primary = **FastFlowLM** when NPU-resident
+  captioning is the goal; **Ollama-ROCm** is the fast/quality alternative
+  on the iGPU. Both wired; user picks via `--vlm`.
+- **First working VLM on NPU:** `gemma4-it:e4b` (Gemma 4 4B vision-language,
+  ships as an NPU2 xclbin set in the FLM release).
+- **First benchmark (2026-05-13, Strix Halo, gemma4-it:e4b, 200×300 px
+  crop, 80-token cap):** ~4.0 s end-to-end roundtrip via OpenAI-compat
+  `/v1/chat/completions`. Compare Ollama-ROCm + `ibm/granite3.3-vision:2b`
+  on the same fixture: ~0.65 s. Apples-to-apples is pending a smaller VLM
+  that FLM publishes kernels for (Gemma 4 E2B candidate).
 
 
 
@@ -31,9 +44,9 @@ Both backends are siblings to the Ollama backend behind the same `VLM` Protocol.
 
 **Tasks (Linux + AMD profile):**
 
-- [ ] Survey the FastFlowLM surface (CLI / HTTP / Python SDK); record what's actually usable in `docs/research/fastflowlm/findings.md` (create if absent)
-- [ ] `FastFlowLMVLM` backend module, lazy-imported
-- [ ] Benchmark NPU (XDNA) vs GPU (ROCm Ollama) on the same fixture: per-caption latency p50/p90/p99, sustainable captions/sec, host memory
+- [x] Survey the FastFlowLM surface (CLI / HTTP / Python SDK); record what's actually usable in `docs/research/fastflowlm.md` (top-level doc, not the subdir originally proposed)
+- [x] `FastFlowLMVLM` backend module — Strategy-style sibling of `OllamaVLM`, uses OpenAI-compat `/v1/chat/completions` so we don't need a separate Python SDK. Auto-redirects to FLM's default port (52625) when the user opts in without overriding the host.
+- [ ] Benchmark NPU (XDNA) vs GPU (ROCm Ollama) on the same fixture: per-caption latency p50/p90/p99, sustainable captions/sec, host memory — *first datapoint logged above; full sweep pending*
 - [ ] Record the benchmark in this phase doc as a comparison table
 
 **Tasks (macOS + Apple Silicon profile):**
@@ -46,11 +59,11 @@ Both backends are siblings to the Ollama backend behind the same `VLM` Protocol.
 
 **Shared tasks:**
 
-- [ ] Wire backend selection: `cfg.vlm.backend in {"ollama", "fastflowlm", "coreml", "fake"}` via the existing factory; per-profile defaults in `config.py`
+- [x] Wire backend selection: `cfg.vlm.backend in {"ollama", "fastflowlm", "coreml", "fake"}` via the existing factory. `fastflowlm` and `ollama` land; `coreml` still pending the macOS sub-track.
 - [ ] Document the routing policy per profile: primary backend, fallback trigger (if any)
 - [ ] (Optional) `FallbackVLM` composite implementing the routing policy
-- [ ] Test: backend factory dispatches by config string and raises on missing platform-only deps
-- [ ] Test: `FastFlowLMVLM` mocked for CI on Linux runners
+- [x] Test: backend factory dispatches by config string and raises on missing platform-only deps
+- [x] Test: `FastFlowLMVLM` mocked for CI on Linux runners — `tests/test_vlm.py` covers payload shape, host resolution, and missing-content error path.
 - [ ] Test: `CoreMLVLM` mocked for CI on macOS runners
 - [ ] Test: `FallbackVLM` (if built) routes to fallback when primary queue exceeds threshold
 

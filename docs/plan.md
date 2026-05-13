@@ -42,7 +42,7 @@ The Strategy pattern (`Detector`, `VLM`, `FrameSource`, `FrameSink`) keeps the p
 | 3a | [Detection / tracking quality](plan/phase-3a-quality.md)               | in-progress |
 | 4  | [Tracking](plan/phase-4-tracking.md)                                   | closed (+ 3a) |
 | 5  | [VLM async (GPU/ROCm via Ollama)](plan/phase-5-vlm-async.md)           | closed      |
-| 6  | [VLM on NPU via FastFlowLM](plan/phase-6-vlm-npu.md)                   | deferred (Linux profile) |
+| 6  | [VLM on NPU via FastFlowLM](plan/phase-6-vlm-npu.md)                   | in-progress (Linux: backend shipped) |
 | 7  | [Queryable VLM (user prompts steer focus)](plan/phase-7-query.md)      | open        |
 | 8  | [Dashboard & control UI](plan/phase-8-dashboard.md)                    | in-progress (debug HUD shipped) |
 | 9  | [Performance hardening](plan/phase-9-performance.md)                   | in-progress (measurement rig shipped) |

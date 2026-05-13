@@ -61,6 +61,31 @@ Nothing structural yet — the Python pipeline design (Stage protocol, bounded q
 3. Track the LFM2.5-VL ONNX → Ryzen AI conversion as a separate sub-task; it is not a prerequisite for the rest of the pipeline working.
 4. Open question to resolve with Marcelo: does the demo need to run on Strix Halo (user's machine, SDK-unsupported but driver-supported) or only on a P100 box?
 
+## NPU detector path — status & blockers (2026-05-13)
+
+Investigated after the Linux profile bring-up landed. Recording what is and isn't on the table.
+
+**Working today (this repo, this box):**
+- VLM on the NPU via **FastFlowLM** — XDNA2 / NPU2 is fully supported; `gemma4-it:e4b` runs end-to-end at ~4 s/caption (see `phase-6-vlm-npu.md`). XRT + `amdxdna` 0.6 driver + NPU FW 1.1.2.65 validate clean via `flm validate`.
+
+**Blocked, requires AMD support:**
+
+| Layer | Status on Strix Halo (this box) | Notes |
+|---|---|---|
+| XRT + amdxdna driver | ✅ works (`xrt-smi examine` sees `RyzenAI-npu5`) | Mainline kernel 7.0 |
+| AMD Quark (`amd-quark==0.11.2`) — ONNX/PyTorch quantizer | ✅ Linux-portable, on PyPI | Pure Python toolkit, no NPU runtime |
+| `onnxruntime-vitisai` wheel (the EP) | ❌ not shipped for Strix Halo | Ryzen AI 1.7.1 Linux supports STX + KRK only; binaries built for Ubuntu 24.04 + Py 3.12. The Vitis-AI EP loads xclbins compiled for blessed SKUs. |
+| `VitisAIExecutionProvider` activating on Strix Halo | ❌ untested but unlikely to work | Per RyzenAI-SW#366: driver yes, SDK no. Strix Halo isn't an enabled target in the shipped xclbins. |
+
+**Practical implication.** For the demo box, the detector stays on **MIGraphX EP / ROCm GPU** (5 ms p50, well under budget). NPU runs the VLM via FastFlowLM. This matches the Versal reference architecture — the iGPU plays the role of the AIE-ML array for vision, and the NPU runs the heavy off-critical-path captioner.
+
+**Routes to revisit, by cost:**
+1. **Cheapest: wait.** AMD's Ryzen AI Linux release cadence is roughly quarterly; Strix Halo support is the most-requested gap in the public tracker. Re-probe each release: install Ubuntu 24.04 in a VM or `distrobox` on Arch, try `onnxruntime-vitisai`, see if `VitisAIExecutionProvider` activates on `/dev/accel/accel0`.
+2. **Medium: P100 / Embedded.** If a P100 dev kit is available (officially blessed), the YOLOv8n ONNX → Quark INT8 → VitisAI EP path is a known recipe (`docs/research/amd-xdna-npu-context.md` §3). Latency target ~5 ms on Strix Point; should be similar on Strix Halo when blessed.
+3. **Expensive: roll our own kernel via IRON / mlir-aie.** This is Phase 10 territory — author the YOLO head's tile mapping in `aie2p.mlir`, build via Vitis AIE tools + xchesscc, dispatch via XRT from Python. FastFlowLM's `lib/*_npu.so` libs demonstrate this is feasible; the open-source `flm` binary uses the same XRT API surface (`xrt::device(0)` + `xrt::ext::kernel`). That same harness could run our own xclbin.
+
+**Re-open this section when** any of these is unblocked.
+
 ## See also
 
 - `docs/research/versal-vek385-pipeline.md` — FPGA reference pipeline (same AIE-ML cores).
