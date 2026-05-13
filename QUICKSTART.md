@@ -202,10 +202,10 @@ Force a specific ONNX Runtime execution provider (auto-picked by default):
 
 > **Linux + AMD first-run cost:** MIGraphX compiles the ONNX graph to AMD
 > bytecode the first time a model is loaded — ~40 s on yolov8n-visdrone at
-> 640. After that, steady-state detector p50 on the Radeon 8060S is ~5 ms
-> (vs ~40 ms on CPU). The compile isn't cached across runs in this build;
-> tolerate the cold start or use `--detector fake` for non-detection bench
-> work.
+> 640, ~60 s at 1280. The compiled `.mxr` is cached at
+> `~/.cache/lowlatcv/migraphx/` so every subsequent run starts in ~1 s
+> (override the path with `$LOWLATCV_MIGRAPHX_CACHE`). Steady-state
+> detector p50 on the Radeon 8060S is ~5 ms (vs ~40 ms on CPU).
 
 ## 5. Tiled detection (SAHI-style, for tiny objects)
 
