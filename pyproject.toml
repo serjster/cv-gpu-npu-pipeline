@@ -23,9 +23,13 @@ dev = [
     "types-PyYAML",
 ]
 detector-onnx = ["onnxruntime>=1.18"]
+detector-onnx-amd = ["onnxruntime-migraphx ; sys_platform == 'linux'"]
 detector-ultralytics = ["ultralytics>=8.3"]
 detector-coreml = ["coremltools>=8"]
 vlm-transformers = ["transformers>=4.45", "torch>=2.4"]
+
+[tool.uv.sources]
+onnxruntime-migraphx = { url = "https://github.com/Looong01/onnxruntime-rocm-build/releases/download/v1.25.0/onnxruntime_migraphx-1.25.0-cp313-cp313-manylinux_2_34_x86_64.whl", marker = "sys_platform == 'linux' and python_version == '3.13'" }
 
 [project.scripts]
 lowlatcv = "lowlatcv.app:main"
