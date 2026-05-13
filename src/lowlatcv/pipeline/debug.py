@@ -98,6 +98,11 @@ class DebugWindow:
         self._frame_times: collections.deque[float] = collections.deque(maxlen=60)
         self._stage_order: list[str] = []
         self._quit_requested = False
+        # Background event-pump task — runs even when the pipeline is paused
+        # (source isn't producing frames) so the debug window stays responsive
+        # to keyboard input.
+        self._pump_task: asyncio.Task[None] | None = None
+        self._pump_stop = asyncio.Event()
 
     async def setup(self) -> None:
         import pygame  # type: ignore[import-untyped]
@@ -114,18 +119,41 @@ class DebugWindow:
         self._texture = sdl2_video.Texture(self._renderer, size=(self._w, self._h), streaming=True)
         self._buf_bgr = np.zeros((self._h, self._w, 3), dtype=np.uint8)
         self._buf_bgra = np.empty((self._h, self._w, 4), dtype=np.uint8)
+        self._pump_task = asyncio.create_task(self._pump_loop(), name="debug-pump")
         log.info("DebugWindow opened %dx%d at (%d, %d)", self._w, self._h, self._x, self._y)
 
     async def process(self, item: Frame) -> Frame:
-        # Honour pause/step. Source already gated; this lets the debug pipeline
-        # path itself stop too so metrics freeze at the paused frame.
-        await self._gate.wait_for_release()
+        # Events are pumped by the background _pump_loop so the window stays
+        # responsive even while the source is paused (no frames flowing).
+        # Here we just render the latest metrics.
         self._frame_times.append(time.perf_counter())
-        self._pump_events()
         self._render(item)
         return item
 
+    async def _pump_loop(self) -> None:
+        """Pumps pygame events at ~50 Hz independent of the per-frame pipeline.
+
+        While the user pauses playback the source stage stalls — no Frames
+        traverse downstream stages, so the per-frame ``process`` never runs.
+        Without this loop the debug window would freeze, including key input
+        (so the user could pause but not unpause). Running on the same asyncio
+        loop as the orchestrator keeps pygame calls on the main thread.
+        """
+        try:
+            while not self._pump_stop.is_set():
+                self._pump_events()
+                with contextlib.suppress(TimeoutError):
+                    await asyncio.wait_for(self._pump_stop.wait(), timeout=0.02)
+        except asyncio.CancelledError:
+            pass
+
     async def teardown(self) -> None:
+        self._pump_stop.set()
+        if self._pump_task is not None:
+            self._pump_task.cancel()
+            with contextlib.suppress(Exception):
+                await self._pump_task
+            self._pump_task = None
         if self._window is not None:
             with contextlib.suppress(Exception):
                 self._window.destroy()
