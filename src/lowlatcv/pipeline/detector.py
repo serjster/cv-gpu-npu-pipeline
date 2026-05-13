@@ -17,6 +17,8 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import logging
+import os
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
 import cv2
@@ -34,6 +36,39 @@ from lowlatcv.pipeline.detector_post import (
 from lowlatcv.pipeline.tile_hints import TileActivityBoard, TileHintBoard
 
 log = logging.getLogger(__name__)
+
+
+def _migraphx_cache_dir() -> str:
+    """MIGraphX-EP model-cache directory.
+
+    Caches the compiled `.mxr` artifact so the ~40 s first-run compile only
+    happens once per (weights, EP) pair. Honours XDG: ``$LOWLATCV_MIGRAPHX_CACHE``
+    overrides; otherwise ``$XDG_CACHE_HOME/lowlatcv/migraphx`` or
+    ``~/.cache/lowlatcv/migraphx``.
+    """
+    explicit = os.environ.get("LOWLATCV_MIGRAPHX_CACHE")
+    if explicit:
+        path = Path(explicit)
+    else:
+        base = os.environ.get("XDG_CACHE_HOME") or str(Path.home() / ".cache")
+        path = Path(base) / "lowlatcv" / "migraphx"
+    path.mkdir(parents=True, exist_ok=True)
+    return str(path)
+
+
+def _provider_spec(providers: list[str]) -> list[str | tuple[str, dict[str, str]]]:
+    """Build the `providers=` arg, attaching per-EP options where helpful.
+
+    MIGraphX gets ``migraphx_model_cache_dir`` so the compiled graph
+    survives across runs. Other EPs pass through as bare strings.
+    """
+    out: list[str | tuple[str, dict[str, str]]] = []
+    for ep in providers:
+        if ep == "MIGraphXExecutionProvider":
+            out.append((ep, {"migraphx_model_cache_dir": _migraphx_cache_dir()}))
+        else:
+            out.append(ep)
+    return out
 
 
 class Detector(Protocol):
@@ -94,9 +129,10 @@ class OnnxDetector:
         import onnxruntime as ort
 
         providers = self._select_providers(ort)
+        spec = _provider_spec(providers)
         loop = asyncio.get_running_loop()
         self._session = await loop.run_in_executor(
-            None, lambda: ort.InferenceSession(self._cfg.weights, providers=providers)
+            None, lambda: ort.InferenceSession(self._cfg.weights, providers=spec)
         )
         meta = self._session.get_inputs()[0]
         self._input_name = meta.name
@@ -302,9 +338,10 @@ class TiledOnnxDetector:
         import onnxruntime as ort
 
         providers = _select_providers(ort, self._cfg.execution_provider)
+        spec = _provider_spec(providers)
         loop = asyncio.get_running_loop()
         self._session = await loop.run_in_executor(
-            None, lambda: ort.InferenceSession(self._cfg.weights, providers=providers)
+            None, lambda: ort.InferenceSession(self._cfg.weights, providers=spec)
         )
         meta = self._session.get_inputs()[0]
         self._input_name = meta.name

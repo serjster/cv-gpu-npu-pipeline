@@ -18,6 +18,7 @@ import asyncio
 import contextlib
 import dataclasses
 import logging
+import os
 import queue
 import threading
 import time
@@ -109,14 +110,23 @@ class AsyncDetector:
         _, fid = self._store.get()
         return fid
 
+    # Cold MIGraphX compile of a 1280-imgsz YOLO model takes ~40 s, and on
+    # bigger / multi-shape graphs it can exceed a minute. 300 s gives the
+    # cold path enough headroom; warm runs (cached .mxr in
+    # $LOWLATCV_MIGRAPHX_CACHE or ~/.cache/lowlatcv/migraphx) complete in
+    # ~1 s. Override via $LOWLATCV_DETECTOR_SETUP_TIMEOUT for slower SKUs.
+    _SETUP_TIMEOUT_S = float(os.environ.get("LOWLATCV_DETECTOR_SETUP_TIMEOUT", "300"))
+
     async def setup(self) -> None:
         self._thread = threading.Thread(
             target=self._worker_loop, name="async-detector", daemon=True
         )
         self._thread.start()
-        await asyncio.get_running_loop().run_in_executor(None, self._setup_done.wait, 60.0)
+        await asyncio.get_running_loop().run_in_executor(
+            None, self._setup_done.wait, self._SETUP_TIMEOUT_S
+        )
         if not self._setup_done.is_set():
-            raise RuntimeError("AsyncDetector setup timed out")
+            raise RuntimeError(f"AsyncDetector setup timed out after {self._SETUP_TIMEOUT_S:.0f}s")
         if self._setup_error is not None:
             raise self._setup_error
 
