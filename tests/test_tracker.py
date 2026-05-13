@@ -66,39 +66,47 @@ def test_active_to_lost_after_max_age_unmatched_frames() -> None:
     cfg = TrackerConfig(iou_threshold=0.3, min_hits=1, max_age=3)
     tracker = ByteTracker(cfg)
     confirm = [_frame(i, (_det(10, 10),)) for i in range(2)]
-    # 3 empty frames → frames_since_match reaches max_age=3 → LOST
-    miss = [_frame(2 + i) for i in range(3)]
+    # Frames that DO carry detections but at a far-away non-matching position —
+    # these count as misses (the upstream looked and didn't see this track).
+    # Empty-detection frames are "no observation" and skip association entirely,
+    # so we use a decoy detection to exercise the unmatched path.
+    miss = [_frame(2 + i, (_det(900, 900),)) for i in range(3)]
     out = _run(tracker, confirm + miss)
     assert out[1].tracks[0].state is TrackState.ACTIVE
-    assert out[-1].tracks[0].state is TrackState.LOST
-    # frames_since_match must equal max_age at the transition
-    assert out[-1].tracks[0].frames_since_match == cfg.max_age
+    # Find the original track (id=1) in the final frame.
+    lost = next((t for t in out[-1].tracks if t.track_id == 1), None)
+    assert lost is not None
+    assert lost.state is TrackState.LOST
+    assert lost.frames_since_match == cfg.max_age
 
 
 def test_lost_to_dead_after_extra_lost_age_frames_then_pruned() -> None:
     cfg = TrackerConfig(iou_threshold=0.3, min_hits=1, max_age=2, lost_age=2)
     tracker = ByteTracker(cfg)
     confirm = [_frame(i, (_det(10, 10),)) for i in range(2)]
-    miss = [_frame(2 + i) for i in range(5)]  # plenty to exceed max_age + lost_age = 4
+    miss = [_frame(2 + i, (_det(900, 900),)) for i in range(5)]
     out = _run(tracker, confirm + miss)
-    # By the last frame the lane has been pruned (DEAD removed) → no tracks emitted
-    assert out[-1].tracks == ()
+    # Original (id=1) is gone; only the decoy's track (id=2) survives.
+    track_ids = {t.track_id for t in out[-1].tracks}
+    assert 1 not in track_ids
 
 
 def test_track_id_not_reused_after_dead() -> None:
     cfg = TrackerConfig(iou_threshold=0.3, min_hits=1, max_age=1, lost_age=1)
     tracker = ByteTracker(cfg)
-    # Phase 1: confirm a track at (10, 10), then starve it until DEAD + pruned.
+    # Phase 1: confirm a track at (10, 10), then starve it (with a decoy
+    # detection elsewhere) until DEAD + pruned.
     seed = [_frame(0, (_det(10, 10),))]
-    starve = [_frame(1 + i) for i in range(5)]
-    # Phase 2: brand-new detection in a different region — must get a fresh id.
+    starve = [_frame(1 + i, (_det(900, 900),)) for i in range(5)]
     new = [_frame(10, (_det(70, 70),))]
     out = _run(tracker, seed + starve + new)
     first_id = out[0].tracks[0].track_id
-    assert out[-2].tracks == ()  # original is gone
-    new_id = out[-1].tracks[0].track_id
-    assert new_id != first_id
-    assert new_id > first_id
+    new_track = next(
+        (t for t in out[-1].tracks if abs(t.bbox[0] - 70) < 5), None
+    )
+    assert new_track is not None
+    assert new_track.track_id != first_id
+    assert new_track.track_id > first_id
 
 
 def test_low_score_recovery_reassociates_unmatched_track() -> None:

@@ -73,6 +73,13 @@ class AsyncDetector:
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
         self._submitted = 0
+        # Last source frame_id that we *emitted* downstream. Used to dedup —
+        # the store keeps the latest worker result and would otherwise be
+        # re-emitted on every process() call; the tracker would then
+        # repeatedly Kalman.update with a stale measurement, dragging
+        # tracks backward and producing the "trail" / phantom-velocity
+        # artifacts.
+        self._last_emitted_src_frame_id = -1
         self._setup_done = threading.Event()
         self._setup_error: BaseException | None = None
 
@@ -91,7 +98,14 @@ class AsyncDetector:
         if (self._submitted % self._every_n) == 0:
             self._submit(item)
         self._submitted += 1
-        dets, _src_frame_id = self._store.get()
+        dets, src_frame_id = self._store.get()
+        # Emit fresh detections exactly once per worker publication. Once
+        # consumed, subsequent process() calls return empty detections so
+        # the tracker downstream only runs Kalman.predict (no update from
+        # a stale measurement).
+        if src_frame_id == self._last_emitted_src_frame_id:
+            return dataclasses.replace(item, detections=())
+        self._last_emitted_src_frame_id = src_frame_id
         return dataclasses.replace(item, detections=dets)
 
     async def teardown(self) -> None:

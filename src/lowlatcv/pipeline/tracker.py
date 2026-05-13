@@ -203,6 +203,17 @@ class ByteTracker:
             lane.kalman.predict()
             lane.bbox = lane.kalman.bbox_xyxy()
 
+        # No detections this frame means the upstream stage has nothing fresh
+        # to associate (e.g. AsyncDetector deduplicated its stale published
+        # set). Treating that as "every track missed" would burn frames_since_match
+        # and force tracks LOST/DEAD between async publications. Instead skip
+        # association entirely — predict-only, no transitions toward LOST,
+        # but still emit snapshots so downstream stages see the rolled-forward
+        # bboxes.
+        if not item.detections:
+            snapshots = tuple(self._snapshot(lane) for lane in self._lanes)
+            return dataclasses.replace(item, tracks=snapshots)
+
         dets = list(item.detections)
         high = [d for d in dets if d.score >= self._cfg.score_high_threshold]
         low = [d for d in dets if d.score < self._cfg.score_high_threshold]
