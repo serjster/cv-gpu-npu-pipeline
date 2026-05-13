@@ -985,6 +985,66 @@ hard NPU-specific work is done.
 
 Files: `~/.local/share/iron-work/bottleneck-build/bench_conv_via_gemm.py`
 
+### GEMM-chain study — xclbin context switch is the real ceiling (2026-05-13)
+
+Ran a follow-up study to see whether sequential GEMM dispatches from
+the host can simulate a YOLO backbone forward.
+
+| Mode (40×40×128→256 GEMM, 3×3 conv) | Per-op μs |
+|--------------------------------------|----------:|
+| 1× dispatch, single xclbin           | 662 |
+| 10× dispatch, single xclbin          | **630** |
+| 4× dispatch, single xclbin, different weights | 621 |
+| 1× dispatch each of 4 different xclbins | ~830 |
+| 4× chained, 4 different xclbins      | **~3260** (4× the sum of single-op times!) |
+
+**Per-op compute is stable at ~630 μs regardless of repeat count or
+weight swap, AS LONG AS the xclbin context stays the same.** Switching
+between different xclbins costs roughly **2.4 ms per switch**.
+
+This re-frames the path to NPU YOLO again:
+
+- **Host-driven sequential dispatch of per-layer xclbins:** dominated
+  by xclbin context-switch overhead. For a YOLOv8n backbone with ~5
+  distinct conv shapes, that's ~12 ms just in switching — already
+  more than the iGPU's full forward.
+
+- **Single fused multi-GEMM xclbin:** the path that works. Same
+  depth-first chain pattern as our conv-kernel bottleneck chain, with
+  GEMM as the building block instead of conv2dk1/3/skip. Multiple
+  matmuls inside one xclbin context = no switch cost, full
+  AIE2P-tuned compute.
+
+The conv-kernel chain framework we built (`resnet_8col.py`) is the
+right architecture — it just uses the wrong compute kernels. Swapping
+in GEMM at the building-block level is **roadmap item #10**.
+
+**Pragmatic implication for the project today:**
+
+- The single-xclbin GEMM dispatch path (which we just validated)
+  works for offloading individual high-compute layers — not for the
+  whole YOLO backbone.
+- For the project demo, the right split remains: detector on iGPU,
+  VLM on NPU via FastFlowLM. NPU as a side accelerator for occasional
+  conv work is technically possible but doesn't beat the iGPU on
+  steady-state YOLO inference.
+- The **fused multi-GEMM chain xclbin** is the missing piece. When it
+  lands, the project's existing pipeline can swap to NPU detection.
+
+**Final roadmap:**
+
+5. ✅ DataShaper + correctness
+6. ⬜ ~~Resident weights~~ — dropped (not on critical path)
+7. ⬜ ~~Multi-frame pipelining~~ — dropped (same reason)
+8. ✅ im2col → GEMM validated for single-layer 3×3 conv
+9. ⬜ im2col on NPU (host-side currently adds 100–450 μs/layer)
+10. ⬜ **Multi-GEMM fused chain xclbin** — the critical missing piece
+    for end-to-end NPU YOLO competitiveness
+11. ⬜ `NPUConvDetector` backend in project pipeline (drops in when
+    #10 is ready)
+
+**Files:** `bench_gemm_chain.py` alongside `bench_conv_via_gemm.py`.
+
 This isn't a data-layout issue alone. The kernel is running (timing
 correct), receives input bytes, but produces nothing. Hypotheses
 remaining:
