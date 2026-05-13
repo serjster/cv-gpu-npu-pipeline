@@ -7,6 +7,13 @@ file in the same commit (see `CLAUDE.md` → *Keep QUICKSTART in sync*).
 The example source is `data/b3d/videos/hwy00.mp4` (4K aerial highway). Swap in
 your own clip / device anywhere it appears.
 
+**Related docs:**
+- [`docs/debug-ui-guide.md`](docs/debug-ui-guide.md) — every indicator in the
+  scene + debug window explained, plus a symptom→knob table for tuning the
+  pipeline when something looks wrong.
+- [`docs/plan/phase-3a-quality.md`](docs/plan/phase-3a-quality.md) — running
+  log of detection/tracking quality improvements + known-open issues.
+
 ---
 
 ## 1. Setup
@@ -320,7 +327,33 @@ Layout: keys mirror `PipelineConfig` (`source`, `preprocess`, `detector`,
 
 ---
 
-## 12. Troubleshooting
+## 12. Debug UI
+
+Two-window operator surface (scene + metrics) with pause/step + per-tile
+activity visualisation. Full reference: [`docs/debug-ui-guide.md`](docs/debug-ui-guide.md).
+
+```bash
+uv run lowlatcv run --source data/b3d/videos/hwy00.mp4 --display \
+  --detector onnx-tiled --weights data/models/yolov8n-visdrone-1280.onnx \
+  --num-classes 10 --imgsz 1280 --tiles 2x2 \
+  --async-detection --detect-every-n 2 \
+  --tile-on-demand --tracker-min-hits 1 \
+  --debug --debug-tiles
+```
+
+| Key (with Debug window focused) | Action |
+|---|---|
+| `Space` | Toggle pause |
+| `→` | Step one frame |
+| `R` | Reset tracer percentile buffers |
+| `Q` | Quit-requested flag |
+
+`--debug-tiles` paints translucent rectangles per tile on the scene:
+🔴 red = recovery (tracker lost a track here) · 🔵 blue = refresh (rotating
+coverage) · 🟢 green = full-sweep · ⚪ grey = never run. Border thickness
+shows freshness. Corner badge: `R|F|S a<age> n<n_dets>`.
+
+## 13. Troubleshooting
 
 Common failure modes seen so far and the knob that fixes each. Add a row
 when you hit a new one — this is meant to be the muscle memory we
@@ -347,12 +380,31 @@ accumulate as the project matures.
 
 ## Known gaps (work in progress)
 
-- Tracker has no appearance feature → ID swaps in dense traffic. Add re-ID or
-  motion-only Hungarian assignment later.
-- VisDrone `pedestrian` / `people` / `bicycle` recall is near zero at 640 — too
-  small. Tile-on-demand helps a bit; a larger model or further zoom needed.
-- Tile-on-demand cold start: brand-new clips have no track hints yet, so the
-  first ~9 frames are needed for the rotating refresh to cover all tiles.
+Authoritative running list lives at [`docs/plan/phase-3a-quality.md`](docs/plan/phase-3a-quality.md).
+Highlights:
+
+**Tracking:**
+- Stale-detection drag under async at high worker latency — fast horizontal
+  cars get yanked back to old positions because Kalman receives measurements
+  from frame T-N at its T-th prediction. Proper fix is per-lane Kalman
+  rewind.
+- No appearance features → ID swaps still possible in dense traffic.
+
+**Detection:**
+- `pedestrian` / `people` / `bicycle` recall near zero on aerial 4K.
+- **NMM (Non-Maximum Merging) at tile aggregation** — currently NMS *drops*
+  the lower-score of two near-duplicate boundary detections; NMM would
+  *merge* them. Better stability on objects straddling tile edges.
+- **Batched tile inference** — today the tile loop calls `session.run` 9
+  times for `tiles=3x3` (~450 ms). Batching to one `session.run` over
+  `(9, 3, H, W)` would likely halve the wall time. CoreML EP compiles per
+  fixed batch size so the ONNX export needs `dynamic={"images": {0:"batch"}}`
+  or a fixed `batch=N`. Cheapest 2× speedup probably available.
+- **Auto-slice sizing** — pick `tile_rows × tile_cols` from a target
+  object-pixel range (à la SAHI's `auto_slice_resolution`) instead of the
+  user guessing the grid by hand.
+
+**Pipeline:**
 - Preprocess still runs on the critical path even when `--detector onnx-tiled`
   (which ignores `Frame.tensor`). Wasted ~3-15 ms of CPU per frame — move
   into the AsyncDetector worker.
@@ -389,6 +441,15 @@ authoritative list.
 | `--detect-every-n N`       | both  | submit a frame to async detector every N frames   |
 | `--tile-on-demand`         | both  | onnx-tiled only: run only tracker-hinted tiles    |
 | `--tile-refresh-tiles-per-cycle N` | both | rotating refresh tiles per cycle (default 1) |
+| `--max-detections N`       | both  | hard cap on detections per frame (default 1000)   |
+| `--tracker-iou-threshold X` | both | IoU floor for tracker association                 |
+| `--tracker-motion-distance-factor X` | both | distance gate for the motion-distance pass (0 = off) |
+| `--tracker-max-age N`      | both  | unmatched frames before ACTIVE → LOST             |
+| `--tracker-lost-age N`     | both  | further unmatched frames before LOST → DEAD       |
+| `--tracker-min-hits N`     | both  | matches needed before TENTATIVE → ACTIVE          |
+| `--export-jsonl PATH`      | both  | per-frame JSONL export (detections + tracks)      |
+| `--debug`                  | run   | open the separate metrics + pause/step window     |
+| `--debug-tiles`            | run   | paint per-tile activity rectangles on scene (onnx-tiled only) |
 | `--vlm fake\|ollama\|none` | both  | VLM backend                                       |
 | `--vlm-model NAME`         | both  | Ollama model name                                 |
 | `--vlm-host URL`           | both  | Ollama base URL                                   |

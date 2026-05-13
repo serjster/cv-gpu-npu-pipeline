@@ -96,9 +96,19 @@ honest about reality.
       / max from the shared `Tracer`, track-state counts, AsyncDetector
       counters + staleness gauge. Pause / step controls. Background
       pump task so the window stays responsive while the source is
-      paused.
+      paused. CLI: `--debug`.
+- [x] Tile-activity overlay (`--debug-tiles`) — `TileActivityBoard` plumbed
+      from `TiledOnnxDetector` to `Overlay`. Per-tile translucent
+      rectangles colour-coded by reason (red = recovery / blue = refresh /
+      green = sweep / grey = never), border thickens when ran-this-cycle,
+      corner badge shows `R|F|S a<age> n<n_dets>`.
+- [x] `docs/debug-ui-guide.md` — operator manual: every indicator's
+      meaning + symptom-to-CLI-knob table (trails / ejections / dominant
+      LOST / cold tiles / ...).
 
 ## Known issues still open
+
+### Tracking
 
 - [ ] **Async detection at high worker latency yanks fast-moving tracks.**
       When the worker takes N frames to publish, the tracker is at frame
@@ -109,10 +119,38 @@ honest about reality.
       every frame (current behaviour); proper fix is per-lane Kalman
       rewind to the source frame before association.
 - [ ] **No appearance features.** ID swaps still possible when two
-      same-class objects cross paths closely.
+      same-class objects cross paths closely. Cheap candidate:
+      per-track HSV histogram on the crop, combined into the Hungarian
+      cost matrix.
+
+### Detection
+
 - [ ] **`pedestrian` / `people` / `bicycle` recall near zero on hwy00.**
       Too small at 1280; tiling helps a little; specialised model or
       higher imgsz would help more.
+- [ ] **NMM (Non-Maximum Merging) at the global aggregation step.**
+      Today `TiledOnnxDetector._aggregate` runs plain NMS across
+      detections from all tiles. When the same car straddles two tiles
+      and both detect it slightly differently, NMS picks one and *drops*
+      the other; NMM *merges* them (weighted-average xyxy, max of the
+      two scores) for a more stable bbox on boundary objects.
+      SAHI-style.
+- [ ] **Batched tile inference.** Today the tile loop in
+      `_infer_blocking` calls `session.run` once per tile (9 sequential
+      calls for tiles=3x3, ~50 ms each → ~450 ms wall). Batching to a
+      single `session.run` with a `(N, 3, H, W)` input would halve or
+      better the wall time on most EPs. Caveat: CoreML EP compiles for
+      a fixed batch size, so the ONNX export would need
+      `dynamic={"images": {0: "batch"}}` or a fixed `batch=N`. Worth
+      probing — could be the cheapest 2× speedup available.
+- [ ] **Auto-slice sizing.** Pick `tile_rows × tile_cols` from a target
+      object-pixel range (e.g. "I want cars at ~40 px in each tile")
+      instead of the user guessing at the grid manually. Equivalent to
+      SAHI's `auto_slice_resolution` heuristic. Could probe the first
+      few frames and lock the grid for the rest of the run.
+
+### Pipeline / engineering
+
 - [ ] **Critical-path preprocess is wasted CPU when `--detector
       onnx-tiled`** — tiled backend ignores `Frame.tensor` and re-does
       its own letterbox per tile. Move preprocess into the worker.
