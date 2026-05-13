@@ -666,37 +666,82 @@ working at small sizes.
 5. ⬜ Weights-resident-across-frames structural change.
 6. ⬜ `NPUConvDetector` backend in the project pipeline.
 
-### 8-column scaling — partial progress (2026-05-13)
+### 8-column scaling lands (2026-05-13)
 
-`resnet_8col.py` lays out the n_cols-parametric structure for the
-straightforward bits:
+Full 8-column chain on Strix Halo NPU5 now compiles, dispatches, and
+measures cleanly. The blocker that stopped the first attempt was a
+hardcoded `cores[2][2]` reference in the `outOFL2L3` ObjectFifo
+declaration — the output fifo's producer was wired to column 2's
+skip-add tile rather than the *last* column's. Fix:
 
-- `shims`, `mems`, `cores`, `rtp` are built as n_cols-length 2D arrays
-- `conv1_kernels`, `conv3_kernels`, `wts_sizes`, `layer1_wts_sizes`,
-  etc. extend with `... + [...] * (n_cols - 1)` patterns
-- `wts_sub_fifos = [[] for _ in range(n_cols)]` instead of literal `[[],[],[]]`
-- `conv3_out_fifos = [act1_fifos[i+1] for i in range(n_cols-1)] + [outOFL2L3]`
-- `wts_tasks` built in a loop with `dma_start_task(act1_0_task, *wts_tasks, out_task)`
-- Column 3 RTP buffers + tile declarations added, mirroring col 1's
-  bottom-up pattern
+```python
+outOFL2L3 = object_fifo(
+    "outOFL2L3", cores[n_cols - 1][2], shims[1], 2, tensorLayer3Out_ty
+)
+```
 
-The blocker at n_cols=4: the **kernel-core-to-fifo binding for col 3**
-fails verification. The existing 3-column design ships specific
-hand-tuned tile assignments for each fifo's producer and each core's
-location — they have to be self-consistent across the FIFO graph. The
-col-3 declarations look right in isolation but don't satisfy whatever
-constraint the upstream design assumes for inter-column data flow
-direction.
+With that single edit, plus the n_cols-parametric structure already in
+`resnet_8col.py` (programmatic shims/mems/cores/rtp arrays, loop-built
+wts_tasks, generated FIFO names), the design scales straight up to
+8 columns.
 
-Next steps when picking this up:
-- Trace exactly which fifo says "producer is tile X" and which core
-  declares itself on tile X — they must agree
-- The error message points to one specific aie.core op (line 851 in the
-  generated MLIR); identify which kernel call is the producer and
-  what fifo it's writing into
-- Likely fix is either swapping the direction of col 3 (top-down vs
-  bottom-up) or adjusting which rtp[i][j] index maps to which cores[i][j]
-  tile
+**Per-block NPU latency vs chain depth (40×40 spatial, Ci=32, INT8):**
+
+| Chain | Total | Per-block | Throughput |
+|------|------:|----------:|-----------:|
+| 1 block, 1 col   | 489 μs    | 489 μs | 114 GFLOPS |
+| 3-block, 3 cols  | 831 μs    | 277 μs | 166 GFLOPS |
+| 4-block, 4 cols  | 850 μs    | 213 μs | 216 GFLOPS |
+| **8-block, 8 cols** | **985 μs** | **123 μs** | **373 GFLOPS** |
+
+Per-block latency dropped 4× as the chain grew from 1 → 8 blocks. This
+is the architectural prediction confirmed: chaining hides per-block DMA
+setup behind on-chip activation residency.
+
+**8-block chain at YOLO sizes vs iGPU MIGraphX FP32:**
+
+| Shape | NPU total | NPU/block | iGPU total | iGPU/block | NPU/iGPU |
+|------|----------:|----------:|-----------:|-----------:|---------:|
+| 40×40, Ci=32 → Cr=128 | 985 μs  | 123 μs | 285 μs | 36 μs | **3.5× slower** |
+| 40×40, Ci=64 → Cr=256 | 3180 μs | 397 μs | 497 μs | 62 μs | 6.4× slower |
+
+The iGPU is still ahead on raw latency at YOLO sizes, but the gap is
+no longer fundamental — it's a function of three knobs we haven't yet
+touched:
+
+1. **INT8 vs FP32.** NPU runs INT8 (256 MAC/cycle/AIE); iGPU runs FP32
+   (~half MAC density at same precision tier). The NPU's nominal
+   advantage at INT8 isn't reflected in these numbers — the kernels and
+   DMA we use aren't yet fully exercising the INT8 path.
+2. **Weights re-DMAed per frame.** Every chain dispatch reloads the
+   full weights from L3. For real YOLO inference, weights would live
+   in mem-tiles between frames; the per-frame DMA cost vanishes after
+   the first.
+3. **Multi-frame pipelining.** Today one dispatch = one frame. The NPU
+   can overlap DMA with compute on adjacent frames; the iGPU has
+   similar but less aggressive overlap. This is a structural change
+   to the runtime sequence, not a kernel change.
+
+**What we have now is end-to-end YOLO-realistic NPU compute that's
+3.5× of the iGPU's latency on a *single* unaccelerated dispatch.** Each
+of the three knobs above could plausibly close 1.5-2× on its own.
+Combined, NPU latency parity or better is reachable.
+
+**Files of record:**
+- `~/.local/share/iron-work/resnet-build/resnet_8col.py` — the
+  n_cols-parametric design. `n_cols=8` is the current default.
+- `~/.local/share/iron-work/resnet-build/test_resnet_strix.py` —
+  measurement harness, `--repeat N` chooses 1 + N blocks.
+
+**Roadmap update:**
+
+1. ✅ Multi-block fused chain proves out
+2. ✅ **3D DMA descriptor fix — YOLO sizes work on NPU**
+3. ✅ **Scale chain to 8 columns / 8 blocks**
+4. ⬜ Correctness validation — port torch reference. ~1 day.
+5. ⬜ Weights-resident-across-frames structural change. ~3-5 days.
+6. ⬜ Multi-frame pipelining. ~3-5 days.
+7. ⬜ `NPUConvDetector` backend in the project pipeline. ~2 days.
 
 **Setup recipe** (full reproduction):
 
