@@ -165,6 +165,87 @@ class OllamaVLM:
     async def teardown(self) -> None: ...
 
 
+class FastFlowLMVLM:
+    """HTTP-client backend for a local FastFlowLM ``flm serve`` server.
+
+    Runs the VLM on the AMD Ryzen AI NPU (XDNA2). FLM exposes an
+    OpenAI-compatible ``/v1/chat/completions`` endpoint on port 52625 by
+    default. The image is sent inline as a base64 ``data:image/jpeg``
+    content part — the same shape an OpenAI client would use.
+
+    Linux-only — XDNA2 NPU (Strix / Strix Halo / Kraken / Gorgon Point) is
+    a prerequisite. On macOS use ``CoreMLVLM`` (Phase 6 macOS half) or
+    ``OllamaVLM`` (Metal GPU). The Strategy split keeps the per-frame
+    plumbing identical; only the backend swaps.
+    """
+
+    name = "flm-vlm"
+    DEFAULT_HOST = "http://localhost:52625"
+
+    def __init__(self, cfg: VLMConfig) -> None:
+        self._cfg = cfg
+        host = cfg.host
+        # If the user opted into this backend but left the Ollama default
+        # host untouched, swap to FLM's port so the request actually lands.
+        if host == VLMConfig().host:
+            host = self.DEFAULT_HOST
+        self._endpoint = host.rstrip("/") + "/v1/chat/completions"
+
+    async def setup(self) -> None:
+        log.info(
+            "FastFlowLMVLM endpoint=%s model=%s prompt=%r timeout=%ss",
+            self._endpoint,
+            self._cfg.model,
+            self._cfg.prompt,
+            self._cfg.request_timeout_s,
+        )
+
+    def caption(self, request: CaptionRequest) -> Caption:
+        crop = request.crop
+        if not isinstance(crop, (bytes, bytearray)):
+            crop = _encode_jpeg(crop)
+        prompt = request.prompt or self._cfg.prompt
+        data_url = "data:image/jpeg;base64," + base64.b64encode(crop).decode("ascii")
+        body = json.dumps(
+            {
+                "model": self._cfg.model,
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "image_url", "image_url": {"url": data_url}},
+                            {"type": "text", "text": prompt},
+                        ],
+                    }
+                ],
+                "stream": False,
+            }
+        ).encode("utf-8")
+        req = urllib.request.Request(
+            self._endpoint,
+            data=body,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=self._cfg.request_timeout_s) as resp:
+                payload = json.loads(resp.read().decode("utf-8"))
+        except (urllib.error.URLError, TimeoutError, OSError) as e:
+            raise RuntimeError(f"fastflowlm request failed: {e}") from e
+        try:
+            text = str(payload["choices"][0]["message"]["content"]).strip()
+        except (KeyError, IndexError, TypeError) as e:
+            raise RuntimeError(f"fastflowlm response missing content: {payload!r}") from e
+        return Caption(
+            track_id=request.track_id,
+            text=text,
+            model=self._cfg.model,
+            ts_ns=time.perf_counter_ns(),
+        )
+
+    async def teardown(self) -> None: ...
+
+
 def _encode_jpeg(image: NDArray[Any]) -> bytes:
     ok, buf = cv2.imencode(".jpg", image)
     if not ok:
@@ -231,6 +312,8 @@ def from_config(cfg: VLMConfig) -> VLM | None:
         return FakeVLM(latency_s=cfg.fake_latency_s)
     if backend == "ollama":
         return OllamaVLM(cfg)
+    if backend == "fastflowlm":
+        return FastFlowLMVLM(cfg)
     raise ValueError(f"unknown VLM backend: {cfg.backend}")
 
 

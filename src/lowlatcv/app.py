@@ -298,7 +298,9 @@ def run(
         "--fps",
         help="pace the source to N fps (default: file's intrinsic FPS; --fps 0 = no pacing).",
     ),
-    vlm: str | None = typer.Option(None, "--vlm", help="VLM backend: fake / ollama / none"),
+    vlm: str | None = typer.Option(
+        None, "--vlm", help="VLM backend: fake / ollama / fastflowlm / none"
+    ),
     vlm_model: str | None = typer.Option(None, "--vlm-model", help="Ollama model name"),
     vlm_host: str | None = typer.Option(None, "--vlm-host"),
     vlm_prompt: str | None = typer.Option(None, "--vlm-prompt"),

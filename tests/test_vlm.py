@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import queue
 import time
+from unittest.mock import patch
 
 import numpy as np
 import pytest
@@ -13,6 +15,8 @@ from lowlatcv.models.caption import Caption, CaptionRequest
 from lowlatcv.pipeline.vlm import (
     CaptionResultStore,
     FakeVLM,
+    FastFlowLMVLM,
+    OllamaVLM,
     VLMWorker,
     from_config,
 )
@@ -51,9 +55,79 @@ def test_fake_vlm_emits_caption_for_request() -> None:
 
 def test_factory_routes_backends_and_disables_on_none() -> None:
     assert isinstance(from_config(VLMConfig(backend="fake")), FakeVLM)
+    assert isinstance(from_config(VLMConfig(backend="ollama")), OllamaVLM)
+    assert isinstance(from_config(VLMConfig(backend="fastflowlm")), FastFlowLMVLM)
     assert from_config(VLMConfig(backend="none")) is None
     with pytest.raises(ValueError, match="unknown VLM backend"):
         from_config(VLMConfig(backend="lalala"))
+
+
+def test_fastflowlm_defaults_to_npu_port_when_host_unchanged() -> None:
+    # User opted into fastflowlm without overriding host → endpoint should
+    # land on FLM's port, not Ollama's.
+    vlm = FastFlowLMVLM(VLMConfig(backend="fastflowlm"))
+    assert vlm._endpoint == "http://localhost:52625/v1/chat/completions"
+
+
+def test_fastflowlm_honours_explicit_host_override() -> None:
+    vlm = FastFlowLMVLM(VLMConfig(backend="fastflowlm", host="http://npubox:9000"))
+    assert vlm._endpoint == "http://npubox:9000/v1/chat/completions"
+
+
+def test_fastflowlm_posts_openai_chat_payload_with_inline_image() -> None:
+    captured: dict[str, object] = {}
+
+    class _FakeResp:
+        def __enter__(self) -> _FakeResp:
+            return self
+
+        def __exit__(self, *_: object) -> None: ...
+
+        def read(self) -> bytes:
+            return json.dumps({"choices": [{"message": {"content": "  a car  "}}]}).encode()
+
+    def _fake_urlopen(req, timeout):  # type: ignore[no-untyped-def]
+        captured["url"] = req.full_url
+        captured["body"] = json.loads(req.data.decode())
+        captured["timeout"] = timeout
+        return _FakeResp()
+
+    vlm = FastFlowLMVLM(VLMConfig(backend="fastflowlm", model="gemma4-it:e4b"))
+    with patch("urllib.request.urlopen", side_effect=_fake_urlopen):
+        cap = vlm.caption(_req(42, frame_id=7))
+
+    assert captured["url"] == "http://localhost:52625/v1/chat/completions"
+    body = captured["body"]
+    assert body["model"] == "gemma4-it:e4b"
+    assert body["stream"] is False
+    [msg] = body["messages"]
+    assert msg["role"] == "user"
+    image_part, text_part = msg["content"]
+    assert image_part["type"] == "image_url"
+    assert image_part["image_url"]["url"].startswith("data:image/jpeg;base64,")
+    assert text_part["type"] == "text"
+    # Caption text is stripped and routed back with the same track id.
+    assert cap.track_id == 42
+    assert cap.text == "a car"
+    assert cap.model == "gemma4-it:e4b"
+
+
+def test_fastflowlm_raises_runtime_error_on_missing_content() -> None:
+    class _FakeResp:
+        def __enter__(self) -> _FakeResp:
+            return self
+
+        def __exit__(self, *_: object) -> None: ...
+
+        def read(self) -> bytes:
+            return b"{}"
+
+    vlm = FastFlowLMVLM(VLMConfig(backend="fastflowlm"))
+    with (
+        patch("urllib.request.urlopen", return_value=_FakeResp()),
+        pytest.raises(RuntimeError, match="fastflowlm response missing content"),
+    ):
+        vlm.caption(_req(1))
 
 
 def test_worker_writes_caption_to_store_then_stops_cleanly() -> None:
