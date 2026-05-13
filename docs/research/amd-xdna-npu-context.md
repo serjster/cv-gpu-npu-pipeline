@@ -86,6 +86,75 @@ Investigated after the Linux profile bring-up landed. Recording what is and isn'
 
 **Re-open this section when** any of these is unblocked.
 
+### Empirical attempt log (2026-05-13)
+
+Tried Route 1 ("install RAI 1.7.1 Linux on Arch, see what happens"). Recording the
+result here so the next person doesn't repeat the experiment.
+
+**Inputs:**
+- `RAI_1.7.1_Linux_NPU_XRT.zip` (driver bundle — XRT 2.21.75 + amdxdna plugin). The Arch
+  packages provide equivalents.
+- `ryzen_ai-1.7.1.tgz` (the actual SDK — `onnxruntime-vitisai`, AMD Quark, flexml,
+  llvm_aie, ryzenai_dynamic_dispatch, voe, device_essentials_{strx,phx}, etc.).
+
+**Setup on Arch (cp312 side-venv at `~/.local/share/ryzen-ai-venv`):**
+
+1. `uv python install 3.12` — wheels are cp312-only.
+2. Install all wheels via `uv pip install --find-links <tgz dir> ...`. AMD's
+   `install_ryzen_ai.sh` does this but enforces `python3.12 -m venv --copies` +
+   patches `bin/activate`. Skipping that script — `uv venv --python 3.12` does the
+   same job cleaner on Arch.
+3. Order matters: install the union first (pulls in vanilla `onnxruntime` 1.22.1 as
+   a transitive of `onnxruntime-providers-ryzenai`), then `uv pip uninstall` it,
+   then reinstall `onnxruntime-vitisai-1.23.3` so it owns the `onnxruntime` namespace.
+4. Pin `numpy<2` — the AMD wheels were compiled against NumPy 1.x and crash on import
+   with NumPy 2.x ("module compiled using NumPy 1.x cannot be run in NumPy 2.4").
+5. Extract `voe-min.tar.gz` into site-packages (xclbins + `vaip_config.json`).
+6. Env vars per `ryzen_ai/scripts/activate.patch`:
+   `LD_LIBRARY_PATH=$SP/flexml/flexml_extras/lib:$SP/onnxruntime/capi:$SP/voe/lib:...`,
+   `XILINX_VITIS=$SP`, `XILINX_VITIS_AIETOOLS=$XILINX_VITIS`,
+   `RYZEN_AI_INSTALLATION_PATH=<venv>`, `XILINX_XRT=<xrt install>`.
+7. XRT — extract from the deb to `~/.local/share/xilinx-xrt/opt/xilinx/xrt`. Patch
+   the Boost 1.83 SONAMEs to symlink to Arch's 1.91 versions
+   (`libboost_filesystem.so.1.83.0 → libboost_filesystem.so.1.91.0`, same for
+   `program_options` and `system`).
+
+**Result on Strix Halo:**
+
+- `import onnxruntime` succeeds.
+- `ort.get_available_providers()` lists **`VitisAIExecutionProvider`** alongside CPU. ✅
+- `ort.InferenceSession(<onnx>, providers=['VitisAIExecutionProvider', ...])` constructs
+  without raising. The verifier prints
+  `All nodes placed on [VitisAIExecutionProvider]. Number of nodes: 5` (the EP wraps
+  the model into a small number of super-nodes).
+- BUT the EP prints two errors during construction:
+  1. `F vaiml_compile.cpp:633 Model compilation is not supported in a deployment only installation. Please compile the model with a full installation.`
+  2. `INFO: [VAIP-VAIML-CUSTOMOP] XRT is not installed. This InferenceSession generates model binaries only. The session handle can not be used for inference run.`
+- `session.run(...)` returns numbers, but **the NPU is not engaged**:
+  - `/proc/<pid>/maps` shows `libonnxruntime_vitisai_ep.so` loaded but no
+    `libxrt_driver_xdna` and no `/dev/accel/accel0` fd in `/proc/<pid>/fd`.
+  - `xrt-smi examine -r aie-partitions` shows `No hardware contexts running on device`
+    throughout the inference loop.
+
+**Apples-to-apples on `amd/yolox-s` (the AMD-published INT8 ONNX, 1×3×640×640):**
+
+| EP / path                                      | mean latency | what it actually is |
+|------------------------------------------------|--------------|---------------------|
+| `MIGraphXExecutionProvider` (iGPU 8060S, ROCm) | **4.0 ms**   | actually on GPU; `xrt-smi` confirms |
+| `VitisAIExecutionProvider` (claimed NPU)        | 8.6 ms      | **CPU fallback**; the AMD-built ORT has better INT8 kernels than vanilla CPU EP, but `/dev/accel/accel0` is never opened |
+| `CPUExecutionProvider` (vanilla ORT)            | 45.1 ms     | vanilla CPU INT8 |
+
+**Conclusion.** AMD's deployment-only Linux SDK 1.7.1 cannot bring up the NPU for
+new ONNX models on Strix Halo: the `vaiml_compile` step is hard-gated to "full
+installation" (which AMD doesn't ship for this SKU), and no pre-compiled NPU
+artifacts targeting NPU5 (8-column XDNA2) ship in `device_essentials_strx`
+(its `xclbin/strx/base.xclbin` is for Strix Point's 4-column NPU4).
+
+For this project's demo: keep detector on MIGraphX iGPU (4–5 ms at 640, 10–60 ms
+tiled at 1280) and VLM on NPU via FastFlowLM (where AMD's closed-source
+language-model kernels *do* support Strix Halo XDNA2). Revisit when AMD adds
+NPU5 to the supported Linux targets.
+
 ## See also
 
 - `docs/research/versal-vek385-pipeline.md` — FPGA reference pipeline (same AIE-ML cores).
