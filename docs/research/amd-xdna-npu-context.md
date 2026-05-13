@@ -584,6 +584,83 @@ the 3D work lives in a separate `bottleneck_3d.py` and doesn't replace
 (generates 3D DMA, times out at runtime); `bottleneck_strix.py` (2D,
 working at small sizes).
 
+### 3D DMA fix landed — YOLO sizes now run on NPU (2026-05-13)
+
+Continued the 3D DMA work from earlier in the session and **found the fix**.
+The trap was that a "pure 3D" TAP (`tensor_dims=(H, W, C)`, sizes/strides 3D)
+emits a 3-dim `aie.dma_bd` that the OF receiver interprets as W·H elements
+(C bytes each) instead of H elements (W·C bytes each). The granularity
+mismatch caused the runtime `ERT_CMD_STATE_TIMEOUT`.
+
+**The fix:** add an explicit trivial outer dim to the access pattern, making
+it 4-dim with `[<1, 0>, <H, W·C>, <W, C>, <C, 1>]`. Then the OF still
+treats the outermost H as the element-count axis (each "element" = one row =
+W·C bytes), but the inner W·C bytes are decomposed into a 2D (W, C) sub-pattern
+where every dim stays ≤ max(W, C) ≤ 1023.
+
+```python
+tap_act_in = TensorAccessPattern(
+    tensor_dims=(1, H, W, Cin),         # 4D, leading 1 is the pad
+    offset=0,
+    sizes=[1, H, W, Cin],
+    strides=[0, W * Cin, Cin, 1],       # leading stride 0 = trivial
+)
+```
+
+Without the `1` pad: mlir-aie collapses to a 3-dim BD and the OF
+receiver sees too many element boundaries → starves.
+
+**Measured at YOLO-realistic 40×40×128 (single bottleneck, single AIE
+column):**
+
+| Backend | Latency | Throughput |
+|---------|--------:|-----------:|
+| **NPU INT8 (mlir-aie, 1 col, 4 cores)** | **489 μs** | **114 GFLOPS** |
+| iGPU MIGraphX FP32 (Radeon 8060S) | 92 μs | 604 GFLOPS |
+| NPU/iGPU ratio | — | 5.3× slower |
+
+**3-block chain at 40×40, Cin=32 → Cout=128 (ResNet-style cascade across
+3 NPU columns, 12 AIE cores):**
+
+| Backend | Total | Per-block | Throughput |
+|---------|------:|----------:|-----------:|
+| **NPU INT8 (3 cols, 12 cores)** | **831 μs** | **277 μs** | **166 GFLOPS** |
+| iGPU MIGraphX FP32 | 148 μs | 49 μs | (combined) |
+| NPU/iGPU ratio | — | — | 5.6× slower |
+
+**Where this puts the project.** The big DMA unlock means *we can now
+compile and run any YOLO-realistic shape on the NPU*. The iGPU is still
+faster per-chain at YOLO size (148 μs vs 831 μs), but several knobs are
+unused in our current design:
+
+- **8 columns instead of 3.** With ResNet-style chaining we use 4 AIE
+  cores per column, so 8 cols = 32 cores instead of 12. Whether that
+  translates 1:1 to ~3× speedup depends on whether per-chain
+  amortization or per-column setup dominates — but it's the obvious
+  next experiment.
+- **Weights resident across frames.** Right now every dispatch
+  re-DMAs the full weight set. For real YOLO inference, weights would
+  live in mem-tiles between frames.
+- **INT8 vs FP32.** The NPU runs INT8; the iGPU is FP32. The iGPU
+  beat us by 5.6× while we used half the precision width, so once
+  we're at parity on column count + on-chip weights, the INT8
+  advantage should compound.
+
+**Files.** `~/.local/share/iron-work/bottleneck-build/bottleneck_3d_pad.py`
+and `~/.local/share/iron-work/resnet-build/resnet_3d.py` carry the 4D-pad
+fix. Existing scripts (`bottleneck_strix.py`, `resnet_strix.py`) keep
+working at small sizes.
+
+**Roadmap, updated again:**
+
+1. ✅ Multi-block fused chain proves out (3 cols, small shapes)
+2. ✅ **3D DMA descriptor rewrite — YOLO sizes work on NPU**
+3. ⬜ Scale chain to 8 columns / 8 blocks — currently the script hardcodes
+   per-column tile/RTP names, needs refactor. Mechanical work, ~1 day.
+4. ⬜ Correctness validation — port torch reference. ~1 day.
+5. ⬜ Weights-resident-across-frames structural change.
+6. ⬜ `NPUConvDetector` backend in the project pipeline.
+
 **Setup recipe** (full reproduction):
 
 ```bash
