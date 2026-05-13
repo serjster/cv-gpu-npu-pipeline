@@ -366,9 +366,7 @@ class TiledOnnxDetector:
             dets = self._run_one_tile(image, r, c)
             self._per_tile[(r, c)] = dets
             if self._activity_board is not None:
-                self._activity_board.record(
-                    r, c, self._current_frame_id, reason, len(dets)
-                )
+                self._activity_board.record(r, c, self._current_frame_id, reason, len(dets))
 
         return self._aggregate()
 
