@@ -1,4 +1,4 @@
-# ast-index Rules — `cv-gpu-npu-pipeline`
+# ast-index Rules — `low-latency-cv`
 
 Real-time CV pipeline (Python reference for AMD Versal AI Edge / XDNA NPU).
 Single source root, Python-only, package name `lowlatcv` under `src/`.

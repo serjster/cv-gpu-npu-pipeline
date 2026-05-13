@@ -294,6 +294,7 @@ data/b3d/
 data/models/
 data/visdrone-sample/
 data/refs/
+.DS_Store
 .claude/scheduled_tasks.lock
 *.onnx
 *.pt

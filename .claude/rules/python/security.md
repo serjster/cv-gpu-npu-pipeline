@@ -5,9 +5,9 @@ paths:
 ---
 # Python Security
 
-> This file extends [common/security.md](../common/security.md) with Python specific content.
-
 ## Secret Management
+
+Load secrets from `.env` (never committed) and fail fast if missing:
 
 ```python
 import os
@@ -15,16 +15,19 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-api_key = os.environ["OPENAI_API_KEY"]  # Raises KeyError if missing
+api_key = os.environ.get("VLM_API_KEY")
+if not api_key:
+    raise RuntimeError("VLM_API_KEY not set in .env")
 ```
 
-## Security Scanning
+Never log secrets, embed them in source, or serialize them to disk.
 
-- Use **bandit** for static security analysis:
-  ```bash
-  bandit -r src/
-  ```
+## Dependency Security
+
+- `ruff check` with security rules enabled catches common vulnerability patterns
+- Heavy ML dependencies (`torch`, `transformers`, `coremltools`) are gated behind the stage that needs them — not imported at module top level
+- Model weights are fetched via `hf download` with SHA verification
 
 ## Reference
 
-See skill: `django-security` for Django-specific security guidelines (if applicable).
+See `docs/coding/design_patterns/` for project-specific guidance.

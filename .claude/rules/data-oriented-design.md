@@ -12,20 +12,20 @@ When writing data-intensive or performance-sensitive code, apply DOD principles 
 
 4. **Batch over individual.** Process collections as a whole, not one item at a time. This enables SIMD, parallelism, and cache-friendly access patterns.
 
-5. **Minimize indirection on hot paths.** Use IDs/indices instead of references for large collections. Use concrete types in inner loops — reserve trait objects (`dyn Trait`) for module boundaries.
+5. **Minimize indirection on hot paths.** Use IDs/indices instead of references for large collections. Use concrete types in inner loops — reserve Protocol dispatch for module boundaries.
 
 6. **Start with AoS, switch to SoA when profiling demands it.** Don't prematurely optimize data layout. Array-of-structs is simpler and usually sufficient.
 
-## Where DOD Applies in KayZeer
+## Where DOD Applies in lowlatcv
 
-- Detection pipeline: pixel buffers → edge maps → tile grids → detected elements
-- Label assignment: element positions → spatial scoring → label strings
-- Overlay rendering: hint data → batch render to pixel buffer
-- Damage tracking: damage rects → tile overlap calculation → incremental re-detection
+- Frame pipeline: numpy array views → bounded queues → stage transforms → output
+- Detection: image tensors → preprocess → model forward → NMS → `Detection` dataclasses
+- Tracking: detections → Kalman predict/update → assignment → `Track` dataclasses
+- Latency tracing: per-stage span timing → aggregated percentile report
 
 ## Where OOP Applies Instead
 
-- Module boundaries: traits for `ScreenCapturing`, `EventPosting`, `OverlayPresenting`
-- Coordinator: state machine with enum-based states
-- Configuration: structs with validation methods
-- System integration: platform-specific implementations behind trait abstractions
+- Module boundaries: Protocol for `Stage`, `FrameSource`, `FrameSink`
+- Orchestrator: `Pipeline` class wiring stages and queues
+- Configuration: dataclasses with factory presets (`DetectorConfig.YOLOV8N_DEFAULT`)
+- Backend integration: platform-specific adapters behind Protocol interfaces

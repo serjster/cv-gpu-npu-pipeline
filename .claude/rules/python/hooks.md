@@ -5,15 +5,15 @@ paths:
 ---
 # Python Hooks
 
-> This file extends [common/hooks.md](../common/hooks.md) with Python specific content.
-
 ## PostToolUse Hooks
 
-Configure in `~/.claude/settings.json`:
+Configure in `.claude/settings.local.json`:
 
-- **black/ruff**: Auto-format `.py` files after edit
-- **mypy/pyright**: Run type checking after editing `.py` files
+- **ruff format**: Auto-run `uv run ruff format` on edited `.py` files
+- **ruff check**: Auto-run `uv run ruff check` on edited `.py` files
+- **mypy**: Auto-run `uv run mypy src` on edited `.py` files
 
 ## Warnings
 
-- Warn about `print()` statements in edited files (use `logging` module instead)
+- Warn about `print()` statements in edited files — use `logging.getLogger(__name__)` instead
+- Warn about missing type annotations on new functions — `mypy --strict` requires them
