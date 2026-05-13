@@ -38,7 +38,7 @@ class DetectorConfig:
     weights: str | None = None
     score_threshold: float = 0.25
     nms_threshold: float = 0.45
-    max_detections: int = 100
+    max_detections: int = 1000
     execution_provider: str | None = None
     num_classes: int = 80
     # Tiled-inference (SAHI-style) knobs. tile_rows/cols = 1 disables tiling.

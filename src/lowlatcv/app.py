@@ -162,6 +162,7 @@ def _apply_detector_overrides(
     detect_every_n: int | None,
     tile_on_demand: bool | None,
     tile_refresh_tiles_per_cycle: int | None,
+    max_detections: int | None,
 ) -> PipelineConfig:
     det = cfg.detector
     if backend is not None:
@@ -191,6 +192,8 @@ def _apply_detector_overrides(
         det = dataclasses.replace(det, tile_on_demand=tile_on_demand)
     if tile_refresh_tiles_per_cycle is not None:
         det = dataclasses.replace(det, tile_refresh_tiles_per_cycle=tile_refresh_tiles_per_cycle)
+    if max_detections is not None:
+        det = dataclasses.replace(det, max_detections=max_detections)
     return dataclasses.replace(cfg, detector=det)
 
 
@@ -299,6 +302,9 @@ def run(
         "--tile-refresh-tiles-per-cycle",
         help="how many rotating refresh tiles to add per inference cycle (default 1)",
     ),
+    max_detections: int | None = typer.Option(
+        None, "--max-detections", help="hard cap on detections per frame (default 100)"
+    ),
     export_jsonl: Path | None = typer.Option(
         None, "--export-jsonl", help="per-frame JSONL export path (detections + tracks)"
     ),
@@ -339,6 +345,7 @@ def run(
         detect_every_n,
         tile_on_demand or None,
         tile_refresh_tiles_per_cycle,
+        max_detections,
     )
     cfg = _apply_vlm_overrides(
         cfg, vlm, vlm_model, vlm_host, vlm_prompt, vlm_cooldown, vlm_rate, vlm_fake_latency
@@ -395,6 +402,7 @@ def bench(
     detect_every_n: int | None = typer.Option(None, "--detect-every-n"),
     tile_on_demand: bool = typer.Option(False, "--tile-on-demand"),
     tile_refresh_tiles_per_cycle: int | None = typer.Option(None, "--tile-refresh-tiles-per-cycle"),
+    max_detections: int | None = typer.Option(None, "--max-detections"),
     export_jsonl: Path | None = typer.Option(None, "--export-jsonl"),
     tracker_iou_threshold: float | None = typer.Option(None, "--tracker-iou-threshold"),
     tracker_motion_distance_factor: float | None = typer.Option(
@@ -424,6 +432,7 @@ def bench(
         detect_every_n,
         tile_on_demand or None,
         tile_refresh_tiles_per_cycle,
+        max_detections,
     )
     cfg = _apply_vlm_overrides(
         cfg, vlm, vlm_model, vlm_host, vlm_prompt, vlm_cooldown, vlm_rate, vlm_fake_latency
