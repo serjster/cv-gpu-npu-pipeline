@@ -515,6 +515,75 @@ rewrite the DMA descriptors as proper 3D tiles where each dim stays
 5. ⬜ **Wire into project pipeline as `NPUConvDetector`** — first version
    runs the YOLOv8n backbone on NPU, the head + NMS on CPU/iGPU.
 
+### 3D DMA descriptor work-in-progress — 2026-05-13
+
+Attempted #2 from the roadmap. **3D DMA descriptor now emits cleanly**;
+**runtime synchronization needs a follow-up.**
+
+**What worked.** The L3 shim-DMA can be told to use 3 productive dims via
+a hand-built `TensorAccessPattern` in `runtime_sequence`:
+
+```python
+tap_act_in = TensorAccessPattern(
+    tensor_dims=(tensorInH, tensorInW, tensorL1InC),   # 3D source view
+    offset=0,
+    sizes=[tensorInH, tensorInW, tensorL1InC],
+    strides=[tensorInW * tensorL1InC, tensorL1InC, 1],
+)
+in_act_task = shim_dma_single_bd_task(of_inOF_act_L3L2, inputFromL3, tap=tap_act_in)
+```
+
+The generated `aie.dma_bd` becomes:
+
+```
+[<size = H, stride = W*C>, <size = W, stride = C>, <size = C, stride = 1>]
+```
+
+Three productive dims, no `repeat_count`, each ≤ max(H, W, C). YOLO 40×40×128:
+40, 40, 128 — all well under the 1023 limit. **The pre-condition for
+scaling to YOLO sizes is met at the DMA layout level.**
+
+Trap to avoid: `TensorAccessPattern(tensor_dims=(activationsIn,), …)`
+(1D source) makes mlir-aie wrap the outermost size dim as
+`repeat_count = N-1` instead of a stride. The total bytes transferred
+then balloons N×, which is wrong. Use a 3D `tensor_dims` matching the
+intended layout.
+
+Equally important: putting `dimensionsToStream` directly on the
+shim-producer ObjectFifo fails with `dimensionsToStream data layout
+transformations are not supported on shim tile producers`. The TAP
+on the runtime side is the supported channel.
+
+**What broke.** Kernel returns `ERT_CMD_STATE_TIMEOUT` at runtime even
+though the design compiles. Diagnosis: the 3D DMA delivers bytes in
+C-byte bursts (one pixel) but the OF element type is `(W, 1, C)` —
+W*C bytes per element. Receiver synchronisation waits for full-element
+chunks; the burst granularity mismatch starves the OF lock cycle.
+
+**Two paths forward** (recorded in `~/.local/share/iron-work/bottleneck-build/3d_dma_findings.md`):
+
+- **Path A**: per-pixel OF element type `(1, 1, C)`. Each OF element is
+  one pixel. The 3D DMA `[H, W, C]` then matches granularity naturally
+  (H·W elements per frame, C bytes each). Cost: rewrite the conv kernel
+  inner loops to consume per-pixel instead of per-row — i.e. new
+  versions of `conv2dk1.cc`, `conv2dk3.cc`, `conv2dk1_skip.cc`. This is
+  the industrial path FastFlowLM-style runtimes take and unlocks both
+  shim and mem-tile DMA scaling. **Recommended.**
+
+- **Path B**: split DMA at the mem-tile (not shim). Keep shim → mem 2D
+  with row-element OF; apply 3D `dimensionsToStream` on mem-tile →
+  compute (those producers accept the attribute). Doesn't actually help
+  for YOLO sizes because the shim's per-element 1023 cap is still
+  binding when W·C > 1023.
+
+The previous working multi-block chain at 8×8 spatial is unchanged —
+the 3D work lives in a separate `bottleneck_3d.py` and doesn't replace
+`bottleneck_strix.py` / `resnet_strix.py`.
+
+**Files:** `~/.local/share/iron-work/bottleneck-build/bottleneck_3d.py`
+(generates 3D DMA, times out at runtime); `bottleneck_strix.py` (2D,
+working at small sizes).
+
 **Setup recipe** (full reproduction):
 
 ```bash
