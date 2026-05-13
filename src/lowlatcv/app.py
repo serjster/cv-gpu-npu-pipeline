@@ -34,7 +34,7 @@ from lowlatcv.pipeline.preprocess import Preprocess
 from lowlatcv.pipeline.runner import Pipeline
 from lowlatcv.pipeline.scheduler import CaptionScheduler
 from lowlatcv.pipeline.sink import SDLDisplaySink
-from lowlatcv.pipeline.tile_hints import TileHintBoard
+from lowlatcv.pipeline.tile_hints import TileActivityBoard, TileHintBoard
 from lowlatcv.pipeline.vlm import CaptionResultStore
 
 log = logging.getLogger(__name__)
@@ -59,6 +59,7 @@ def build_pipeline(
     pace: bool = False,
     export_jsonl: Path | None = None,
     debug: bool = False,
+    debug_tiles: bool = False,
 ) -> Pipeline:
     """Wire the stage graph.
 
@@ -80,10 +81,18 @@ def build_pipeline(
         return Pipeline(stages, tracer, queue_size=cfg.queue_size)
     preprocess = Preprocess(cfg.preprocess)
     hint_board: TileHintBoard | None = None
+    activity_board: TileActivityBoard | None = None
     detector: Any
-    if cfg.detector.tile_on_demand and cfg.detector.backend.lower() == "onnx-tiled":
+    tiled = cfg.detector.backend.lower() == "onnx-tiled"
+    if tiled and debug_tiles:
+        activity_board = TileActivityBoard()
+    if cfg.detector.tile_on_demand and tiled:
         hint_board = TileHintBoard()
-        detector = TiledOnnxDetector(cfg.detector, hint_board=hint_board)
+        detector = TiledOnnxDetector(
+            cfg.detector, hint_board=hint_board, activity_board=activity_board
+        )
+    elif tiled:
+        detector = TiledOnnxDetector(cfg.detector, activity_board=activity_board)
     else:
         detector = detector_module.from_config(cfg.detector)
     async_detector_ref: AsyncDetector | None = None
@@ -95,7 +104,14 @@ def build_pipeline(
     caption_store = CaptionResultStore()
     vlm = vlm_module.from_config(cfg.vlm)
     scheduler = CaptionScheduler(cfg.vlm, caption_store, vlm=vlm)
-    overlay = Overlay(cfg.overlay, caption_store=caption_store, caption_chars=cfg.vlm.caption_chars)
+    overlay = Overlay(
+        cfg.overlay,
+        caption_store=caption_store,
+        caption_chars=cfg.vlm.caption_chars,
+        activity_board=activity_board,
+        tile_rows=cfg.detector.tile_rows if tiled else 0,
+        tile_cols=cfg.detector.tile_cols if tiled else 0,
+    )
     stages = [source, preprocess, detector, tracker, scheduler, overlay]
     if export_jsonl is not None:
         stages.append(JsonlExportSink(export_jsonl))
@@ -113,6 +129,7 @@ async def _drive(
     pace: bool = False,
     export_jsonl: Path | None = None,
     debug: bool = False,
+    debug_tiles: bool = False,
 ) -> str:
     tracer = Tracer()
     reporter = _make_reporter(fmt)
@@ -125,6 +142,7 @@ async def _drive(
         pace=pace,
         export_jsonl=export_jsonl,
         debug=debug,
+        debug_tiles=debug_tiles,
     )
     await pipeline.run()
     return reporter.render()
@@ -331,6 +349,11 @@ def run(
     debug: bool = typer.Option(
         False, "--debug", help="open a separate debug window with metrics + pause/step controls"
     ),
+    debug_tiles: bool = typer.Option(
+        False,
+        "--debug-tiles",
+        help="paint per-tile activity overlay on the scene (only useful with --detector onnx-tiled)",
+    ),
     tracker_iou_threshold: float | None = typer.Option(None, "--tracker-iou-threshold"),
     tracker_motion_distance_factor: float | None = typer.Option(
         None, "--tracker-motion-distance-factor"
@@ -400,6 +423,7 @@ def run(
             pace=pace,
             export_jsonl=export_jsonl,
             debug=debug,
+            debug_tiles=debug_tiles,
         )
     )
     typer.echo(report)

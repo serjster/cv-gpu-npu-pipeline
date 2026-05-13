@@ -22,6 +22,7 @@ from numpy.typing import NDArray
 
 from lowlatcv.config import OverlayConfig
 from lowlatcv.models.frame import Frame, Track, TrackState
+from lowlatcv.pipeline.tile_hints import TileActivityBoard
 from lowlatcv.pipeline.vlm import CaptionResultStore
 
 log = logging.getLogger(__name__)
@@ -43,14 +44,27 @@ class Overlay:
         cfg: OverlayConfig | None = None,
         caption_store: CaptionResultStore | None = None,
         caption_chars: int = 64,
+        activity_board: TileActivityBoard | None = None,
+        tile_rows: int = 0,
+        tile_cols: int = 0,
     ) -> None:
         self._cfg = cfg or OverlayConfig()
         self._caption_store = caption_store
         self._caption_chars = caption_chars
+        # Tile-activity visualisation. When wired, the overlay paints a
+        # translucent rectangle per tile colour-coded by the reason the
+        # tile last ran (red = recovery, blue = refresh, green = sweep)
+        # and faded by age (frames since last run). Lets the operator see
+        # coverage gaps and tracker churn at a glance.
+        self._activity_board = activity_board
+        self._tile_rows = tile_rows
+        self._tile_cols = tile_cols
 
     async def setup(self) -> None: ...
 
     async def process(self, item: Frame) -> Frame:
+        if self._activity_board is not None and self._tile_rows > 0 and self._tile_cols > 0:
+            self._draw_tile_activity(item)
         if item.tracks:
             self._draw_tracks(item)
         elif item.detections:
@@ -58,6 +72,54 @@ class Overlay:
         return item
 
     async def teardown(self) -> None: ...
+
+    def _draw_tile_activity(self, item: Frame) -> None:
+        assert self._activity_board is not None
+        img = item.image
+        H, W = img.shape[:2]
+        rows = self._tile_rows
+        cols = self._tile_cols
+        tile_h = H / rows
+        tile_w = W / cols
+        snapshot = self._activity_board.snapshot()
+        # cv2 colours are BGR. Tune both hue (reason) and alpha (age).
+        reason_color = {
+            "recovery": (0, 0, 255),  # red — tracker says "find this again"
+            "refresh": (255, 130, 0),  # blue/cyan — rotating coverage tile
+            "sweep": (0, 220, 80),  # green — full-sweep mode
+        }
+        for r in range(rows):
+            for c in range(cols):
+                x1 = int(c * tile_w)
+                y1 = int(r * tile_h)
+                x2 = int((c + 1) * tile_w)
+                y2 = int((r + 1) * tile_h)
+                state = snapshot.get((r, c))
+                if state is None:
+                    color = (90, 90, 90)
+                    age = -1
+                    reason_letter = "·"
+                    n = 0
+                else:
+                    color = reason_color.get(state.reason, (180, 180, 180))
+                    age = max(0, item.id - state.last_frame_id)
+                    reason_letter = state.reason[:1].upper()
+                    n = state.n_dets
+                thickness = 2 if age == 0 else 1
+                cv2.rectangle(img, (x1, y1), (x2, y2), color, thickness=thickness)
+                # Tiny corner badge so the visualisation is readable
+                # without occluding the scene.
+                label = f"{reason_letter} a{age if age >= 0 else '-'} n{n}"
+                cv2.putText(
+                    img,
+                    label,
+                    (x1 + 8, y1 + 28),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.7,
+                    color,
+                    2,
+                    cv2.LINE_AA,
+                )
 
     def _draw_tracks(self, item: Frame) -> None:
         img = item.image

@@ -31,7 +31,7 @@ from lowlatcv.pipeline.detector_post import (
     nms,
     unletterbox_xyxy,
 )
-from lowlatcv.pipeline.tile_hints import TileHintBoard
+from lowlatcv.pipeline.tile_hints import TileActivityBoard, TileHintBoard
 
 log = logging.getLogger(__name__)
 
@@ -275,6 +275,7 @@ class TiledOnnxDetector:
         self,
         cfg: DetectorConfig,
         hint_board: TileHintBoard | None = None,
+        activity_board: TileActivityBoard | None = None,
     ) -> None:
         if cfg.weights is None:
             raise ValueError("TiledOnnxDetector requires DetectorConfig.weights")
@@ -290,7 +291,12 @@ class TiledOnnxDetector:
         # frame coords) so the aggregate output stays full-frame even when
         # only a subset of tiles was rerun this cycle. None entry = never run.
         self._hint_board = hint_board
+        self._activity_board = activity_board
         self._per_tile: dict[tuple[int, int], list[Detection]] = {}
+        # Current frame id, set by process() before delegating to the
+        # blocking inference helper so per-tile activity records can be
+        # stamped with the source frame.
+        self._current_frame_id: int = -1
 
     async def setup(self) -> None:
         import onnxruntime as ort
@@ -331,6 +337,7 @@ class TiledOnnxDetector:
 
     async def process(self, item: Frame) -> Frame:
         loop = asyncio.get_running_loop()
+        self._current_frame_id = item.id
         dets = await loop.run_in_executor(None, self._infer_blocking, item.image)
         return dataclasses.replace(item, detections=dets)
 
@@ -340,6 +347,7 @@ class TiledOnnxDetector:
         cols = self._cfg.tile_cols
         # Decide which tiles to run this cycle.
         on_demand = self._cfg.tile_on_demand and self._hint_board is not None
+        to_run: dict[tuple[int, int], str]
         if on_demand:
             assert self._hint_board is not None
             to_run = self._hint_board.select_tiles(
@@ -352,10 +360,15 @@ class TiledOnnxDetector:
             # via its motion model until a future hint cycle re-covers them.
             self._per_tile.clear()
         else:
-            to_run = {(r, c) for r in range(rows) for c in range(cols)}
+            to_run = {(r, c): "sweep" for r in range(rows) for c in range(cols)}
 
-        for r, c in to_run:
-            self._per_tile[(r, c)] = self._run_one_tile(image, r, c)
+        for (r, c), reason in to_run.items():
+            dets = self._run_one_tile(image, r, c)
+            self._per_tile[(r, c)] = dets
+            if self._activity_board is not None:
+                self._activity_board.record(
+                    r, c, self._current_frame_id, reason, len(dets)
+                )
 
         return self._aggregate()
 
