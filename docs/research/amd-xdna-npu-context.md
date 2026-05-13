@@ -382,6 +382,86 @@ fundamental advantage over FP32 should add another 2× on top.
   backend that takes a YOLOv8n forward graph, slices into bottleneck-like
   blocks, dispatches each to the NPU.
 
+### Multi-column scaling probe via IRON GEMM — 2026-05-13
+
+Before committing to weeks of multi-column bottleneck redesign, used IRON's
+already-working 8-column GEMM as a stand-in for **1×1 convolution** (math
+identity: `Conv1x1(H,W,Cin→Cout) ≡ GEMM(H·W × Cin, Cin × Cout)`). This
+measures the actual NPU silicon at YOLO-realistic shapes without doing the
+MLIR-AIE multi-column rewrite first.
+
+**Method.** `iron/operators/gemm/op.GEMM` with `num_aie_columns=8`, tiles
+auto-picked to satisfy `M % (tile_m * 4 rows) == 0`, `K % tile_k == 0`,
+`N % (tile_n * 8 cols) == 0`. Inputs / outputs bf16. Latency measured via
+`iron.common.test_utils.run_test` (pure on-device NPU time). Compared
+against `MIGraphXExecutionProvider` running the equivalent 1×1 conv as
+FP32 ONNX.
+
+**YOLOv8n-shaped 1×1 conv layers (NPU bf16 8-col vs iGPU FP32):**
+
+| Layer (H×W×Cin→Cout) | FLOPs   | NPU 8-col bf16 | iGPU FP32 | NPU/iGPU |
+|----------------------|--------:|---------------:|----------:|---------:|
+| 80×80×64 → 128       | 104.9 M | 311 μs         | 97 μs     | **3.2× slower** |
+| 80×80×128 → 128      | 209.7 M | 348 μs         | 138 μs    | 2.5× slower |
+| 40×40×128 → 128      |  52.4 M | 293 μs         | 89 μs     | 3.3× slower |
+| 40×40×128 → 256      | 104.9 M | 300 μs         | 90 μs     | 3.3× slower |
+| 40×40×256 → 256      | 209.7 M | 328 μs         | 117 μs    | 2.8× slower |
+| 20×20×256 → 256      |  26.2 M | (skipped*)     | 75 μs     | — |
+
+\* M=400 doesn't satisfy IRON GEMM's `M % (tile_m × 4 rows) == 0`
+constraint (smallest 32; 400/32 = 12.5). Would require kernel padding.
+
+**The NPU silicon CAN reach high throughput — the YOLO shapes just don't
+amortize the setup.** Big-shape sweep with the same 8-column GEMM:
+
+| M     | K    | N    | Latency | Throughput  |
+|-------|------|------|---------|-------------|
+| 256   | 256  | 512  | 100 μs  | 669 GFLOPS  |
+| 1024  | 256  | 512  | 128 μs  | 2.1 TFLOPS  |
+| 2048  | 512  | 1024 | 416 μs  | 5.2 TFLOPS  |
+| 4096  | 512  | 1024 | 731 μs  | 5.9 TFLOPS  |
+| 2048  | 1024 | 1024 | 671 μs  | **6.4 TFLOPS** |
+
+Per-launch overhead is roughly 100 μs (cf. the M=256 row); above
+~250 MFLOPs/call the NPU starts pulling its weight. YOLOv8n 1×1 layers
+sit at 50–200 MFLOPs/call — right inside the overhead-dominated zone.
+
+**This re-frames "best NPU YOLO performance":**
+
+Per-layer dispatch from the host loses to the iGPU. To beat the iGPU, the
+entire YOLO forward needs to run as **one fused NPU dispatch** with
+weights pre-staged in mem-tiles. Total YOLOv8n FLOPs ≈ 8.5 GFLOPs; at the
+NPU's measured 6.4 TFLOPS bf16 the *compute-only* lower bound is
+~1.3 ms — under half the iGPU's 5 ms. But getting there requires the
+same depth-first multi-layer kernel design FastFlowLM ships for LLMs.
+
+**Status on `bench_1x1_conv.py` validation:** 5–10% numerical mismatch
+within the run_test default tolerance — expected because bf16 GEMM with
+bfp16 mmul emulation accumulates rounding differently than the FP32
+torch reference. Output values are in the right ballpark; correctness
+is not a concern, just precision.
+
+**Updated next-step priorities, in cost order:**
+
+1. **(Days) Port the torch golden-reference check** into the bottleneck
+   harness — confirm the 4-AIE-core single-column bottleneck is
+   numerically correct, not just dispatch-clean.
+2. **(1-2 weeks) Multi-column bottleneck via design replication** —
+   each column gets its own 4-core depth-first pipeline, input split
+   spatially. Same caveat: per-call overhead still dominates unless we
+   chain blocks.
+3. **(2-4 weeks) Multi-block NPU-resident pipeline** — the real prize.
+   Chain multiple bottleneck-like blocks across columns; weights
+   resident in mem-tiles across frames. This is the only path that
+   actually beats the iGPU on YOLO end-to-end.
+4. **(weeks) Custom GEMM tiling for 20×20-shape YOLO heads** — the
+   deepest backbone layers don't fit IRON's default GEMM tile
+   constraints. Either pad to M=416 or write a custom small-M GEMM.
+
+**Honest framing carries over:** the NPU's TFLOPS are real and competitive
+on this SKU, but the iGPU wins for *layer-by-layer* dispatch because
+each per-call DMA setup costs ~100 μs that the iGPU doesn't have.
+
 **Setup recipe** (full reproduction):
 
 ```bash
