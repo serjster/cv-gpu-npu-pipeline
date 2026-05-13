@@ -317,6 +317,103 @@ path" zone.
 faster YOLO. It's concurrency (detector iGPU, VLM NPU via FastFlowLM) and
 power. A Conv2D-on-NPU exhibit is a research artifact, not a perf upgrade.
 
+### Multi-layer fused bottleneck on AIE2P — 2026-05-13
+
+Reusable build pipeline now exists for ResNet-style multi-conv blocks on
+Strix Halo, ported from `mlir-aie/programming_examples/ml/bottleneck/`.
+
+**Port summary:**
+
+- The Phoenix-targeted defaults (32×32×256, innermost DMA dim 8192) blow
+  AIE2P's 10-bit per-dim DMA descriptor limit (max 1023). The original
+  Makefile has Strix lit configs (`run_strix_makefile.lit`) but the design
+  itself isn't shape-tuned for AIE2P.
+- Patched `bottleneck_placed.py` → `bottleneck_strix.py` to accept tensor
+  dimensions as CLI args. Held to `W × Cin ≤ 1023` constraint (keeps the
+  innermost DMA dim below the hardware limit).
+- Kernels (`conv2dk1.cc`, `conv2dk3.cc`, `conv2dk1_skip.cc`) compile cleanly
+  with Peano for `aie2p-none-unknown-elf` — they came from `aie_kernels/aie2/`
+  but cross-compile to AIE2P with only tuning-constant differences vs
+  hand-tuned aie2p variants. **No new C++ kernel writing was needed.**
+- `aiecc` lowering + xclbin link succeeds for shapes obeying the DMA limit.
+- Test harness wraps numpy arrays with `XRTTensor`, dispatches via
+  `DefaultNPURuntime.load_and_run`, reads `npu_time` from the on-device
+  result.
+
+**Measured (4-AIE-core depth-first bottleneck = 1×1 → ReLU → 3×3 → ReLU →
+1×1 + skip, INT8, single column of 8 on Strix Halo):**
+
+| Shape (H×W×Cin) | FLOPs   | NPU (1 col, INT8) | iGPU (FP32, MIGraphX) | NPU/iGPU |
+|-----------------|--------:|------------------:|----------------------:|---------:|
+| 8 × 8 × 64      | 0.56 M  | 114 μs            | 35 μs                 | 3.3×     |
+| 16 × 8 × 64     | 1.11 M  | ~130 μs           | 33 μs                 | 3.9×     |
+| 32 × 8 × 64     | 2.23 M  | ~155 μs           | 36 μs                 | 4.3×     |
+| 16 × 16 × 32    | 0.56 M  | ~93 μs            | 33 μs                 | 2.8×     |
+
+The NPU sits at ~5–15 GFLOPS on these shapes; the iGPU climbs from 16 to
+62 GFLOPS as work amortises kernel-launch overhead. **Caveat: this
+NPU run is perf-only — the minimal test harness skipped the torch
+golden-reference check that the original `test.py` runs. The kernel
+returns clean `ERT_CMD_STATE_COMPLETED`, but numerical correctness is
+not validated yet.**
+
+**Why the NPU loses on this design and what closes the gap:**
+
+| Cost driver | Today | Headroom |
+|---|---|---:|
+| AIE cores used                  | 4 of 48 (one column) | ~8× by using all 8 columns |
+| Activations to/from DDR per block | yes | ~1.5× by keeping inter-block activations on-chip |
+| DMA descriptor granularity      | innermost dim ≤ 1023 forces small W·C tiles | rewriting as 3D DMA gives YOLO-sized shapes |
+| Vectorization width             | INT8 already at full SIMD | none — kernels are tuned |
+
+Naïve product: 8 × 1.5 ≈ **12×** headroom over today's number. Even at
+half of that we'd cross the iGPU's per-block latency, and INT8's
+fundamental advantage over FP32 should add another 2× on top.
+
+**Where this leaves the YOLO-on-NPU project:**
+
+- ✅ Conv2D AIE2P toolchain end-to-end works on Strix Halo.
+- ✅ Multi-layer fused conv pipeline (the YOLO C2f-shaped block) works.
+- ⬜ Multi-column tiling — the next concrete step to actually beat iGPU.
+- ⬜ DMA descriptor rewrite — required to scale to YOLO-realistic
+  feature-map sizes (W×C > 1023).
+- ⬜ Correctness validation — port torch reference from original test.py.
+- ⬜ Wrap into the project's `Detector` Protocol — `NPUConvDetector`
+  backend that takes a YOLOv8n forward graph, slices into bottleneck-like
+  blocks, dispatches each to the NPU.
+
+**Setup recipe** (full reproduction):
+
+```bash
+# Build the iron-venv (cp312) as described in the IRON section above,
+# plus XRT setup. Then:
+
+KERN=~/.local/share/iron-work/mlir-aie/aie_kernels/aie2
+PEANO=$IRON_VENV/lib/python3.12/site-packages/llvm-aie
+INC=$IRON_VENV/lib/python3.12/site-packages/mlir_aie/include
+
+# Compile the three conv kernels for aie2p (same C++ as aie2, Peano
+# cross-targets — bottleneck doesn't need bespoke AIE2P kernels):
+for KSRC in conv2dk1 conv2dk3 conv2dk1_skip; do
+  DDEF=$([ "$KSRC" = "conv2dk3" ] && echo "-DUINT8_ACT" || echo "-DINT8_ACT")
+  $PEANO/bin/clang -O2 -std=c++20 --target=aie2p-none-unknown-elf \
+    -Wno-parentheses -Wno-attributes -Wno-macro-redefined -Wno-empty-body \
+    -DNDEBUG -I $INC $DDEF -c $KERN/$KSRC.cc -o $KSRC.o
+done
+
+# Generate MLIR for the bottleneck (small dimensions that fit DMA limit):
+python bottleneck_strix.py npu2 8 8 64 > aie.mlir
+# (script is bottleneck_placed.py with tensorInW/H/Cin pulled from argv)
+
+# Lower MLIR + link kernels into xclbin:
+aiecc --aie-generate-xclbin --aie-generate-npu-insts --no-compile-host \
+  --alloc-scheme=basic-sequential --no-xchesscc --no-xbridge \
+  --xclbin-name=final.xclbin --npu-insts-name=insts.bin aie.mlir
+
+# Run + measure:
+python test_strix.py -x final.xclbin -i insts.bin -wd 8 -ht 8 -ic 64
+```
+
 ## See also
 
 - `docs/research/versal-vek385-pipeline.md` — FPGA reference pipeline (same AIE-ML cores).
