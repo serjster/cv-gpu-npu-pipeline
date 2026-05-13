@@ -296,6 +296,9 @@ data/visdrone-sample/
 data/refs/
 .DS_Store
 .claude/scheduled_tasks.lock
+.claude/settings.local.json
+**/.claude/settings.local.json
+.idea/
 *.onnx
 *.pt
 *.mlpackage
