@@ -69,9 +69,15 @@ class SDLDisplaySink:
 
     name = "sink"
 
-    def __init__(self, window_name: str = "lowlatcv", vsync: bool = False) -> None:
+    def __init__(
+        self,
+        window_name: str = "lowlatcv",
+        vsync: bool = False,
+        pumps_events: bool = True,
+    ) -> None:
         self._window_name = window_name
         self._vsync = vsync
+        self._pumps_events = pumps_events
         self._pygame: Any = None
         self._sdl2: Any = None
         self._window: Any = None
@@ -102,9 +108,11 @@ class SDLDisplaySink:
         self._renderer.clear()
         self._texture.draw()
         self._renderer.present()
-        # Pump the event queue so the window stays responsive on macOS.
-        for _ in self._pygame.event.get():
-            pass
+        # Pump the event queue so the window stays responsive on macOS — unless
+        # another stage (e.g. DebugWindow) owns the event pump.
+        if self._pumps_events:
+            for _ in self._pygame.event.get():
+                pass
         return None
 
     def _init_window(self, w: int, h: int) -> None:

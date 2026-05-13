@@ -82,6 +82,32 @@ class AsyncDetector:
         self._last_emitted_src_frame_id = -1
         self._setup_done = threading.Event()
         self._setup_error: BaseException | None = None
+        # Counters exposed for the debug HUD.
+        self._submitted_count = 0
+        self._dropped_count = 0
+        self._published_count = 0
+        self._last_worker_ms: float = 0.0
+
+    @property
+    def submitted_count(self) -> int:
+        return self._submitted_count
+
+    @property
+    def dropped_count(self) -> int:
+        return self._dropped_count
+
+    @property
+    def published_count(self) -> int:
+        return self._published_count
+
+    @property
+    def last_worker_ms(self) -> float:
+        return self._last_worker_ms
+
+    @property
+    def last_published_frame_id(self) -> int:
+        _, fid = self._store.get()
+        return fid
 
     async def setup(self) -> None:
         self._thread = threading.Thread(
@@ -120,10 +146,14 @@ class AsyncDetector:
     def _submit(self, frame: Frame) -> None:
         # Drop-oldest: if a stale frame is still queued, kick it out so the
         # worker picks up the freshest one when it becomes ready.
-        with contextlib.suppress(queue.Empty):
+        try:
             self._q.get_nowait()
+            self._dropped_count += 1
+        except queue.Empty:
+            pass
         with contextlib.suppress(queue.Full):
             self._q.put_nowait(frame)
+            self._submitted_count += 1
 
     def _worker_loop(self) -> None:
         loop = asyncio.new_event_loop()
@@ -158,6 +188,8 @@ class AsyncDetector:
                 continue
             dt = (time.perf_counter() - t0) * 1000
             self._store.put(out.detections, item.id)
+            self._published_count += 1
+            self._last_worker_ms = dt
             log.debug(
                 "AsyncDetector frame=%d dets=%d worker_ms=%.1f",
                 item.id,

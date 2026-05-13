@@ -26,12 +26,14 @@ from lowlatcv.pipeline import source as source_module
 from lowlatcv.pipeline import tracker as tracker_module
 from lowlatcv.pipeline import vlm as vlm_module
 from lowlatcv.pipeline.async_detector import AsyncDetector
+from lowlatcv.pipeline.debug import DebugWindow, PauseGate
 from lowlatcv.pipeline.detector import TiledOnnxDetector
 from lowlatcv.pipeline.jsonl_export import JsonlExportSink
 from lowlatcv.pipeline.overlay import Overlay
 from lowlatcv.pipeline.preprocess import Preprocess
 from lowlatcv.pipeline.runner import Pipeline
 from lowlatcv.pipeline.scheduler import CaptionScheduler
+from lowlatcv.pipeline.sink import SDLDisplaySink
 from lowlatcv.pipeline.tile_hints import TileHintBoard
 from lowlatcv.pipeline.vlm import CaptionResultStore
 
@@ -56,17 +58,23 @@ def build_pipeline(
     raw: bool = False,
     pace: bool = False,
     export_jsonl: Path | None = None,
+    debug: bool = False,
 ) -> Pipeline:
     """Wire the stage graph.
 
     Full graph: Source → Preprocess → Detector → Tracker → Caption → Overlay →
-    [JsonlExportSink] → Sink. ``raw=True``: Source → Sink only.
-    ``pace=True``: source throttles to SourceConfig.target_fps for real-time
-    playback. ``export_jsonl``: tap stage writes per-frame detections + tracks
-    to JSONL before the terminal sink.
+    [JsonlExportSink] → [DebugWindow] → Sink. ``raw``, ``pace``, ``debug``
+    toggle optional components.
     """
-    source = source_module.from_uri(cfg.source.uri, cfg.source, frame_limit=frame_limit, pace=pace)
-    sink = sink_module.from_config(cfg.sink)
+    gate = PauseGate() if debug else None
+    source = source_module.from_uri(
+        cfg.source.uri, cfg.source, frame_limit=frame_limit, pace=pace, pause_gate=gate
+    )
+    if debug and cfg.sink.kind == "display":
+        # When the debug window is active it owns the event pump.
+        sink: Any = SDLDisplaySink(vsync=cfg.sink.vsync, pumps_events=False)
+    else:
+        sink = sink_module.from_config(cfg.sink)
     if raw:
         stages: list[Any] = [source, sink]
         return Pipeline(stages, tracer, queue_size=cfg.queue_size)
@@ -78,8 +86,11 @@ def build_pipeline(
         detector = TiledOnnxDetector(cfg.detector, hint_board=hint_board)
     else:
         detector = detector_module.from_config(cfg.detector)
+    async_detector_ref: AsyncDetector | None = None
     if cfg.detector.async_detection:
-        detector = AsyncDetector(detector, detect_every_n=cfg.detector.detect_every_n)
+        async_detector = AsyncDetector(detector, detect_every_n=cfg.detector.detect_every_n)
+        async_detector_ref = async_detector
+        detector = async_detector
     tracker = tracker_module.from_config(cfg.tracker, hint_board=hint_board)
     caption_store = CaptionResultStore()
     vlm = vlm_module.from_config(cfg.vlm)
@@ -88,6 +99,8 @@ def build_pipeline(
     stages = [source, preprocess, detector, tracker, scheduler, overlay]
     if export_jsonl is not None:
         stages.append(JsonlExportSink(export_jsonl))
+    if debug and gate is not None:
+        stages.append(DebugWindow(tracer, gate, async_detector=async_detector_ref))
     stages.append(sink)
     return Pipeline(stages, tracer, queue_size=cfg.queue_size)
 
@@ -99,12 +112,19 @@ async def _drive(
     raw: bool = False,
     pace: bool = False,
     export_jsonl: Path | None = None,
+    debug: bool = False,
 ) -> str:
     tracer = Tracer()
     reporter = _make_reporter(fmt)
     tracer.subscribe(reporter)
     pipeline = build_pipeline(
-        cfg, tracer, frame_limit=frame_limit, raw=raw, pace=pace, export_jsonl=export_jsonl
+        cfg,
+        tracer,
+        frame_limit=frame_limit,
+        raw=raw,
+        pace=pace,
+        export_jsonl=export_jsonl,
+        debug=debug,
     )
     await pipeline.run()
     return reporter.render()
@@ -308,6 +328,9 @@ def run(
     export_jsonl: Path | None = typer.Option(
         None, "--export-jsonl", help="per-frame JSONL export path (detections + tracks)"
     ),
+    debug: bool = typer.Option(
+        False, "--debug", help="open a separate debug window with metrics + pause/step controls"
+    ),
     tracker_iou_threshold: float | None = typer.Option(None, "--tracker-iou-threshold"),
     tracker_motion_distance_factor: float | None = typer.Option(
         None, "--tracker-motion-distance-factor"
@@ -369,7 +392,15 @@ def run(
         pace = True
     limit = frames if frames > 0 else None
     report = asyncio.run(
-        _drive(cfg, limit, cfg.metrics.format, raw=raw, pace=pace, export_jsonl=export_jsonl)
+        _drive(
+            cfg,
+            limit,
+            cfg.metrics.format,
+            raw=raw,
+            pace=pace,
+            export_jsonl=export_jsonl,
+            debug=debug,
+        )
     )
     typer.echo(report)
 

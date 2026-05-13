@@ -46,9 +46,10 @@ def from_uri(
     cfg: SourceConfig | None = None,
     frame_limit: int | None = None,
     pace: bool = False,
+    pause_gate: Any | None = None,
 ) -> FrameSource:
     """Factory Method: select a source backend from the URI scheme."""
-    return _from_uri(uri, cfg or SourceConfig(), frame_limit, pace)
+    return _from_uri(uri, cfg or SourceConfig(), frame_limit, pace, pause_gate)
 
 
 if not TYPE_CHECKING:
@@ -68,6 +69,7 @@ class FileSource:
         cfg: SourceConfig | None = None,
         frame_limit: int | None = None,
         pace: bool = False,
+        pause_gate: Any | None = None,
     ) -> None:
         self._path = path
         self._cfg = cfg or SourceConfig()
@@ -77,6 +79,7 @@ class FileSource:
         self._i = 0
         self._frame_period_ns: int | None = None
         self._next_frame_ns: int | None = None
+        self._pause_gate = pause_gate
 
     async def setup(self) -> None:
         loop = asyncio.get_running_loop()
@@ -110,6 +113,8 @@ class FileSource:
     async def process(self, item: Any) -> Frame | _EOFType:
         if self._frame_limit is not None and self._i >= self._frame_limit:
             return EOF
+        if self._pause_gate is not None:
+            await self._pause_gate.wait_for_release()
         await self._wait_for_next_slot()
         loop = asyncio.get_running_loop()
         ok, image = await loop.run_in_executor(None, self._cap.read)
@@ -146,8 +151,15 @@ class WebcamSource(FileSource):
         cfg: SourceConfig | None = None,
         frame_limit: int | None = None,
         pace: bool = False,
+        pause_gate: Any | None = None,
     ) -> None:
-        super().__init__(path=str(device_index), cfg=cfg, frame_limit=frame_limit, pace=pace)
+        super().__init__(
+            path=str(device_index),
+            cfg=cfg,
+            frame_limit=frame_limit,
+            pace=pace,
+            pause_gate=pause_gate,
+        )
         self._device_index = device_index
 
     async def setup(self) -> None:
@@ -169,14 +181,16 @@ def _from_uri(
     cfg: SourceConfig,
     frame_limit: int | None,
     pace: bool,
+    pause_gate: Any | None = None,
 ) -> FrameSource:
+    common = dict(cfg=cfg, frame_limit=frame_limit, pace=pace, pause_gate=pause_gate)
     if uri.startswith("webcam:"):
         idx = int(uri.split(":", 1)[1])
-        return WebcamSource(device_index=idx, cfg=cfg, frame_limit=frame_limit, pace=pace)
+        return WebcamSource(device_index=idx, **common)  # type: ignore[arg-type]
     if uri.startswith(_NETWORK_SCHEMES):
-        return FileSource(path=uri, cfg=cfg, frame_limit=frame_limit, pace=pace)
+        return FileSource(path=uri, **common)  # type: ignore[arg-type]
     if uri.startswith("file://"):
-        return FileSource(path=uri[len("file://") :], cfg=cfg, frame_limit=frame_limit, pace=pace)
+        return FileSource(path=uri[len("file://") :], **common)  # type: ignore[arg-type]
     if uri.isdigit():
-        return WebcamSource(device_index=int(uri), cfg=cfg, frame_limit=frame_limit, pace=pace)
-    return FileSource(path=uri, cfg=cfg, frame_limit=frame_limit, pace=pace)
+        return WebcamSource(device_index=int(uri), **common)  # type: ignore[arg-type]
+    return FileSource(path=uri, **common)  # type: ignore[arg-type]

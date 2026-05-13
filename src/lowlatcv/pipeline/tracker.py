@@ -70,9 +70,7 @@ class _Kalman2D:
         h: float,
         max_speed_px: float = 50.0,
     ) -> None:
-        self.x: NDArray[np.float64] = np.array(
-            [cx, cy, w, h, 0.0, 0.0], dtype=np.float64
-        )
+        self.x: NDArray[np.float64] = np.array([cx, cy, w, h, 0.0, 0.0], dtype=np.float64)
         # position uncertainty moderate, velocity uncertainty bounded (was 1e4)
         # so the filter doesn't latch onto the first noisy measurement and
         # invent a velocity that compounds.
