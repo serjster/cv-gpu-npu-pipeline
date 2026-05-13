@@ -19,8 +19,14 @@ your own clip / device anywhere it appears.
 ## 1. Setup
 
 ```bash
-# One-off: install dependencies into .venv
-uv sync
+# macOS (Apple Silicon) — PyPI onnxruntime ships the CoreML EP
+uv sync --extra detector-onnx
+
+# Linux + AMD (ROCm GPU + XDNA NPU) — Looong's onnxruntime-migraphx wheel
+# (cp313) — exposes MIGraphX + ROCM EPs against ROCm 7.x. Pulled via
+# [tool.uv.sources] from a GitHub release; AMD's own repo only ships
+# cp310 / cp312 today.
+uv sync --extra detector-onnx-amd
 
 # Lint / typecheck / test (after any change)
 uv run ruff check src tests
@@ -28,6 +34,15 @@ uv run ruff format src tests
 uv run mypy src
 uv run pytest -q
 ```
+
+> **Linux system prerequisites (Arch shown — Ubuntu has equivalents):**
+> ROCm (`rocm-hip-libraries` or `magma-hip`) for the GPU detector path,
+> `migraphx` (the AMD compiled-graph runtime; the wheel dlopen's
+> `libmigraphx_c.so.3`), `xrt` + `xrt-plugin-amdxdna` + `amdxdna-dkms`
+> for the NPU, `ffmpeg` for video decode, and `ollama-rocm` if you want
+> the GPU VLM path. Verify the NPU with `xrt-smi examine` —
+> `RyzenAI-npu5` should be listed and `[Linux] NPU: /dev/accel/accel0`
+> should appear with `flm validate`.
 
 ## 2. Get YOLOv8 weights
 
@@ -180,10 +195,17 @@ Force a specific ONNX Runtime execution provider (auto-picked by default):
 
 ```bash
 ... --execution-provider CoreMLExecutionProvider     # macOS Apple Si
-... --execution-provider ROCMExecutionProvider        # Linux + AMD
-... --execution-provider MIGraphXExecutionProvider    # Linux + AMD (compiled graph)
+... --execution-provider MIGraphXExecutionProvider    # Linux + AMD (compiled graph) — recommended on Strix Halo
+... --execution-provider ROCMExecutionProvider        # Linux + AMD (HIP direct) — needs the separate onnxruntime-rocm wheel
 ... --execution-provider CPUExecutionProvider         # fallback
 ```
+
+> **Linux + AMD first-run cost:** MIGraphX compiles the ONNX graph to AMD
+> bytecode the first time a model is loaded — ~40 s on yolov8n-visdrone at
+> 640. After that, steady-state detector p50 on the Radeon 8060S is ~5 ms
+> (vs ~40 ms on CPU). The compile isn't cached across runs in this build;
+> tolerate the cold start or use `--detector fake` for non-detection bench
+> work.
 
 ## 5. Tiled detection (SAHI-style, for tiny objects)
 
@@ -202,7 +224,7 @@ uv run lowlatcv run --source data/b3d/videos/hwy00.mp4 --display \
 `--fps 0` removes source pacing — the tiled detector (~140 ms / 7 fps) sets
 the rate naturally via back-pressure.
 
-## 6. + VLM captions (Ollama)
+## 6. + VLM captions (Ollama — GPU)
 
 Needs a local Ollama server with the model pulled:
 
@@ -224,9 +246,14 @@ uv run lowlatcv run --source data/b3d/videos/hwy00.mp4 --display \
 VLM runs **off** the critical path on a worker thread. Captions appear under
 each tracked box every few seconds.
 
+**Linux + AMD note:** the system `ollama-rocm` package provides GPU-accelerated
+inference on the Radeon iGPU (8060S on Strix Halo). `ollama serve` picks ROCm
+automatically. Reference latency on this box: `ibm/granite3.3-vision:2b` ~0.65 s
+per caption against a 200×300 px crop.
+
 VLM flags:
 
-- `--vlm fake|ollama|none`
+- `--vlm fake|ollama|fastflowlm|none`
 - `--vlm-model <ollama-model>` e.g. `moondream`, `llava`, `qwen2-vl`
 - `--vlm-host http://localhost:11434`
 - `--vlm-prompt "Describe ..."`
@@ -234,6 +261,50 @@ VLM flags:
 - `--vlm-rate HZ` — global rate limit (0 = unlimited)
 - `--vlm-fake-latency SECONDS` — artificial latency on FakeVLM for the
   "no-impact" proof
+
+## 6a. + VLM captions on the NPU (FastFlowLM, Linux + Ryzen AI only)
+
+FastFlowLM runs VLMs directly on the AMD XDNA2 NPU. Linux + Strix Halo /
+Strix Point / Krackan / Gorgon Point only.
+
+```bash
+# 1. Install: grab the latest .deb from
+#    https://github.com/FastFlowLM/FastFlowLM/releases and extract to /opt
+#    (or any user dir + set env vars below). On Arch this means:
+mkdir -p ~/.local/share/fastflowlm
+bsdtar xf fastflowlm_*_ubuntu*.deb -C /tmp/flm
+bsdtar xf /tmp/flm/data.tar.zst -C ~/.local/share/fastflowlm
+# Symlink Boost 1.91 to the expected 1.90 SONAME on Arch:
+ln -sf /usr/lib/libboost_program_options.so.1.91.0 \
+  ~/.local/share/fastflowlm/opt/fastflowlm/lib/flm/libboost_program_options.so.1.90.0
+
+# 2. Env vars (drop into your shell rc):
+export FLM_HOME=~/.local/share/fastflowlm/opt/fastflowlm
+export LD_LIBRARY_PATH="$FLM_HOME/lib/flm:${LD_LIBRARY_PATH-}"
+export FLM_XCLBIN_PATH="$FLM_HOME/share/flm/xclbins"
+export FLM_CONFIG_PATH="$FLM_HOME/share/flm/model_list.json"
+
+# 3. Verify and pull a VLM (Gemma 4 4B has NPU2 kernels in the FLM release):
+$FLM_HOME/bin/flm validate    # expects NPU FW 1.1.x.x, /dev/accel/accel0
+$FLM_HOME/bin/flm pull gemma4-it:e4b
+
+# 4. Run the FLM server (default port 52625):
+$FLM_HOME/bin/flm serve gemma4-it:e4b &
+
+# 5. Pipeline with the NPU VLM backend:
+uv run lowlatcv run --source data/b3d/videos/hwy00.mp4 --display \
+  --detector onnx --weights data/models/yolov8n-visdrone.onnx \
+  --num-classes 10 \
+  --vlm fastflowlm --vlm-model gemma4-it:e4b \
+  --vlm-cooldown 5 --vlm-rate 0.5
+```
+
+`--vlm-host` defaults to FLM's port automatically when `--vlm fastflowlm` is
+chosen and you haven't overridden it. Reference latency on Strix Halo for the
+above: ~4 s per caption end-to-end on `gemma4-it:e4b` — bigger model than the
+Ollama path, so the cooldown / rate-limit are tuned lower. Smaller models that
+FLM ships kernels for (e.g. `gemma4-it:e2b`, `gemma3:1b`) will get you under
+1 s. See `flm list` for the catalog.
 
 ## 7. Benchmark mode (no display, latency report)
 
@@ -450,8 +521,8 @@ authoritative list.
 | `--export-jsonl PATH`      | both  | per-frame JSONL export (detections + tracks)      |
 | `--debug`                  | run   | open the separate metrics + pause/step window     |
 | `--debug-tiles`            | run   | paint per-tile activity rectangles on scene (onnx-tiled only) |
-| `--vlm fake\|ollama\|none` | both  | VLM backend                                       |
-| `--vlm-model NAME`         | both  | Ollama model name                                 |
+| `--vlm fake\|ollama\|fastflowlm\|none` | both | VLM backend (fastflowlm = NPU)         |
+| `--vlm-model NAME`         | both  | Ollama / FastFlowLM model name (e.g. `moondream`, `gemma4-it:e4b`) |
 | `--vlm-host URL`           | both  | Ollama base URL                                   |
 | `--vlm-prompt TEXT`        | both  | per-track prompt                                  |
 | `--vlm-cooldown SECONDS`   | both  | per-track refresh interval                        |
