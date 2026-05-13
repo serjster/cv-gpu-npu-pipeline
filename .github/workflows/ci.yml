@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: ${{ matrix.os }} / py3.13
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # Both first-class profiles. The AMD-specific extras live behind
+        # sys_platform == 'linux' in pyproject.toml, so each runner installs
+        # only what its profile actually uses.
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Install Python 3.13
+        run: uv python install 3.13
+
+      # detector-onnx (PyPI generic) and detector-onnx-amd (ROCm wheel)
+      # both install into the same `onnxruntime` namespace; if both are
+      # installed the last-write wins and the AMD EPs get hidden. Each
+      # profile installs exactly one. Linux runs the AMD wheel (validates
+      # resolution + import path; ROCm libs missing on the runner is fine
+      # because the tests stay on the CPU EP). macOS uses the PyPI wheel
+      # which bundles the CoreML EP.
+      - name: uv sync (Linux + AMD)
+        if: runner.os == 'Linux'
+        run: uv sync --extra detector-onnx-amd
+
+      - name: uv sync (macOS)
+        if: runner.os == 'macOS'
+        run: uv sync --extra detector-onnx
+
+      - name: Lint
+        run: uv run ruff check src tests
+
+      - name: Format check
+        run: uv run ruff format --check src tests
+
+      - name: Type check
+        run: uv run mypy src
+
+      - name: Tests
+        run: uv run pytest -q
