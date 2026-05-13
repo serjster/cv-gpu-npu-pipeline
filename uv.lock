@@ -629,6 +629,7 @@ dependencies = [
     { name = "opencv-python-headless" },
     { name = "pygame-ce" },
     { name = "pyyaml" },
+    { name = "scipy" },
     { name = "typer" },
 ]
 
@@ -672,6 +673,7 @@ requires-dist = [
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8" },
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.6" },
+    { name = "scipy", specifier = ">=1.13" },
     { name = "torch", marker = "extra == 'vlm-transformers'", specifier = ">=2.4" },
     { name = "transformers", marker = "extra == 'vlm-transformers'", specifier = ">=4.45" },
     { name = "typer", specifier = ">=0.12" },

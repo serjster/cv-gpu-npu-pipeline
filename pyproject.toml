@@ -9,6 +9,7 @@ authors = [{ name = "Sergio Soldado" }]
 dependencies = [
     "typer>=0.12",
     "numpy>=2.0",
+    "scipy>=1.13",
     "opencv-python-headless>=4.10",
     "pyyaml>=6.0",
     "pygame-ce>=2.5",
