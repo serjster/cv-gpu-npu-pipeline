@@ -98,14 +98,15 @@ class AsyncDetector:
         if (self._submitted % self._every_n) == 0:
             self._submit(item)
         self._submitted += 1
-        dets, src_frame_id = self._store.get()
-        # Emit fresh detections exactly once per worker publication. Once
-        # consumed, subsequent process() calls return empty detections so
-        # the tracker downstream only runs Kalman.predict (no update from
-        # a stale measurement).
-        if src_frame_id == self._last_emitted_src_frame_id:
-            return dataclasses.replace(item, detections=())
-        self._last_emitted_src_frame_id = src_frame_id
+        dets, _src_frame_id = self._store.get()
+        # NOTE: re-emits the latest published set on every call. A previous
+        # version deduplicated so each result was emitted once, but that
+        # broke fast-moving tracks: by the time fresh detections arrived
+        # (from worker source frame X), the tracker had Kalman-predicted
+        # forward to frame T >> X, so predicted positions disagreed with
+        # the stale measurement by velocity × (T-X) pixels. Stationary cars
+        # matched; horizontal-highway cars did not. Proper fix is to rewind
+        # Kalman state to the source frame before association — TODO.
         return dataclasses.replace(item, detections=dets)
 
     async def teardown(self) -> None:
