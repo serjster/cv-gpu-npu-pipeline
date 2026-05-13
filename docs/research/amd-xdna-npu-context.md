@@ -150,10 +150,92 @@ installation" (which AMD doesn't ship for this SKU), and no pre-compiled NPU
 artifacts targeting NPU5 (8-column XDNA2) ship in `device_essentials_strx`
 (its `xclbin/strx/base.xclbin` is for Strix Point's 4-column NPU4).
 
-For this project's demo: keep detector on MIGraphX iGPU (4–5 ms at 640, 10–60 ms
-tiled at 1280) and VLM on NPU via FastFlowLM (where AMD's closed-source
-language-model kernels *do* support Strix Halo XDNA2). Revisit when AMD adds
-NPU5 to the supported Linux targets.
+### Empirical attempt log — Route 3 (IRON / mlir-aie), 2026-05-13
+
+Tried Route 3 ("custom kernels via IRON / mlir-aie") to see if we can run *any*
+real compute on Strix Halo's NPU5 from this Linux box. Outcome: **yes — and
+unlike the VitisAI EP, the NPU actually executes the work.**
+
+**Setup (Arch, cp312 side-venv at `~/.local/share/iron-venv`):**
+
+1. `git clone -b devel https://github.com/amd/IRON ~/.local/share/iron-work/iron`.
+2. `uv venv --python 3.12 ~/.local/share/iron-venv`.
+3. `pip install -r requirements.txt` — pulls `mlir_aie==0.0.1.2026033104+e4f35d6`
+   (cp312 wheel, ~700 MB) and `llvm-aie==21.0.0.2026051101+adc9df1a`
+   (~1.5 GB) from Xilinx GitHub release indices.
+4. Need pyxrt from the deb extract: `export PYTHONPATH=$XRT/python:$PYTHONPATH`
+   (it's a cp312 `.so` inside the Linux NPU XRT bundle from the previous experiment).
+5. `export XILINX_XRT=~/.local/share/xilinx-xrt/opt/xilinx/xrt`,
+   `export LD_LIBRARY_PATH=$XILINX_XRT/lib:$LD_LIBRARY_PATH`.
+
+**mlir-aie recognises Strix Halo:** `aie.utils.get_current_device()` returns an
+`NPU2` instance with `cols=8, rows=6` — all 48 AIE tiles addressable. The
+`NPU_MODELS` table in `aie/utils/hostruntime/xrtruntime/hostruntime.py` already
+maps `npu5 / Strix Halo` to the `npu2` family, so no patching needed.
+
+**Tests pass — the toolchain compiles for AIE2P and dispatches via XRT:**
+- `pytest iron/operators/axpy/` → **160 / 160 PASSED** in 29 s (covers
+  1, 2, 4, **8** column configurations).
+- `pytest iron/operators/gemm/ -m "not extensive"` → **45 / 45 PASSED** in 48 s
+  (covers 2048×2048×2048 bf16 GEMM on 1, 2, 4, 8 columns, plus smaller shapes
+  with different tile partitions).
+
+The CSV emitted by `iron/common/test_utils.run_test` records per-test
+`latency_us` and `bandwidth_gbps` measured from the NPU itself (not host
+wall-clock), giving us real on-device numbers.
+
+**Apples-to-apples bench — pure GEMM 2048×2048×2048 (17.2 GFLOPs/call):**
+
+| Backend                                  | Precision | Latency  | Throughput |
+|------------------------------------------|-----------|---------:|-----------:|
+| **iGPU Radeon 8060S (MIGraphX EP)**      | FP32      | **2.54 ms** | **6.8 TFLOPS** |
+| NPU Strix Halo XDNA2 (IRON, 8 columns)   | bf16      | 7.42 ms  | 2.3 TFLOPS |
+| NPU Strix Halo XDNA2 (IRON, 4 columns)   | bf16      | 13.5 ms  | 1.3 TFLOPS |
+| NPU Strix Halo XDNA2 (IRON, 2 columns)   | bf16      | 27.1 ms  | 0.6 TFLOPS |
+| NPU Strix Halo XDNA2 (IRON, 1 column)    | bf16      | 48.4 ms  | 0.4 TFLOPS |
+| CPU Ryzen AI MAX+ 395 (numpy)            | FP32      | 29.8 ms  | 0.6 TFLOPS |
+
+**Interpretation.**
+
+- For raw matmul on this SKU the **iGPU beats the NPU by ~3×** even though
+  iGPU runs FP32 and NPU runs bf16. The 8060S is a 16-CU RDNA3.5 part with
+  hipBLAS/MIGraphX-optimised paths; a single NPU column does ~1/8th of the
+  iGPU's work at half the precision width.
+- The NPU's throughput scales near-linearly with columns (×2 cols → ×2 TFLOPS),
+  i.e. there's no obvious column-shared bottleneck inside this kernel design.
+- For a full YOLOv8n forward (~8.5 GFLOPs, conv-heavy), at 2.3 TFLOPS bf16 NPU
+  matmul the *ideal* upper bound is sub-millisecond per inference — but conv
+  isn't yet wired in IRON for AIE2P (the dashboard marks Convolution 🟡
+  in-development; only matmul / attention / norm / activations are shipped).
+  Until conv lands or we route through im2col-matmul ourselves, the NPU can't
+  run YOLO directly through IRON.
+
+**Where the NPU wins anyway:**
+
+- **Power.** XDNA2 sustains its TFLOPS at ~15 W vs the iGPU at 40–50 W for
+  similar matmul throughput. Most of the time we're not throughput-limited.
+- **Concurrency.** Detector on iGPU + VLM on NPU (via FastFlowLM) is the
+  architecture the FPGA reference targets — both accelerators productive at
+  once.
+- **AMD's hand-tuned kernels.** FastFlowLM's closed-source `_npu.so` libs are
+  not generic IRON; they're production-optimised attention/MLP for specific
+  model families. For language models on NPU they're hard to beat from
+  scratch.
+
+**Practical implication for this repo.** Three routes are real, in cost order:
+
+1. **Keep the current split** (detector iGPU, VLM NPU via FLM). Best latency
+   today; matches the FPGA reference. Phase 6 / 10 work continues here.
+2. **Author conv2d in IRON for AIE2P** as a research deliverable. ~weeks of
+   MLIR-AIE kernel work (`aie_kernels/aie2p/conv2d.cc` doesn't exist yet;
+   `mm.cc` does and could be adapted via im2col). Worth scoping if the
+   demo's story includes "we wrote a YOLO kernel on the NPU."
+3. **Wait for AMD's Conv kernel** to land in IRON (Convolution is 🟡 on
+   the operator dashboard — actively in development). Cheapest path; we
+   re-bench once it ships.
+
+**Re-open this section when** Conv2D lands in IRON for AIE2P, or when we
+decide to invest in option 2.
 
 ## See also
 
