@@ -101,9 +101,7 @@ def test_track_id_not_reused_after_dead() -> None:
     new = [_frame(10, (_det(70, 70),))]
     out = _run(tracker, seed + starve + new)
     first_id = out[0].tracks[0].track_id
-    new_track = next(
-        (t for t in out[-1].tracks if abs(t.bbox[0] - 70) < 5), None
-    )
+    new_track = next((t for t in out[-1].tracks if abs(t.bbox[0] - 70) < 5), None)
     assert new_track is not None
     assert new_track.track_id != first_id
     assert new_track.track_id > first_id

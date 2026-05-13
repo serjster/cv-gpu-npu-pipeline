@@ -292,6 +292,9 @@ pyrightconfig.json
 # lowlatcv: large binaries — videos + model weights live outside git
 data/b3d/
 data/models/
+data/visdrone-sample/
+data/refs/
+.claude/scheduled_tasks.lock
 *.onnx
 *.pt
 *.mlpackage
