@@ -832,21 +832,33 @@ xclbin and getting **PASS!**).
 
 **Updated apples-to-apples comparison at YOLO size — correct output:**
 
-| Workload (40×40 Ci=64→Cr=256, 8-block chain) | Latency |
-|------|---------:|
-| NPU (Strix Halo, 8 cols, INT8) | **3252 μs** = 406 μs/block |
-| iGPU (Radeon 8060S, MIGraphX FP32) | 497 μs = 62 μs/block |
-| NPU/iGPU | 6.5× slower |
+Per-block latency drop with chain depth (40×40, Ci=64→Cr=256, INT8):
 
-The gap is consistent with our earlier measurements. The three
-remaining structural levers (resident weights, multi-frame
-pipelining, INT8 throughput tuning) are now the only path to crossing
-iGPU latency — but they would be working on real conv output, not
-zeros.
+| Chain depth | Total NPU time | Per-block | Throughput |
+|------------:|---------------:|----------:|-----------:|
+| 3-block (3 cols) | 2857 μs | 952 μs | 193 GFLOPS |
+| 4-block (4 cols) | 2878 μs | 720 μs | 255 GFLOPS |
+| **8-block (8 cols)** | **3338 μs** | **417 μs** | **440 GFLOPS** |
+
+**2.3× per-block speedup from chaining holds at correctness-validated
+dims.** Going from 3 → 8 blocks: 2.67× more compute, 1.17× more time.
+On-chip activation residency works.
+
+| Workload (8-block, 40×40 Ci=64→Cr=256) | Latency |
+|------|---------:|
+| NPU (Strix Halo, 8 cols, INT8) | **3338 μs** = 417 μs/block |
+| iGPU (Radeon 8060S, MIGraphX FP32) | 497 μs = 62 μs/block |
+| NPU/iGPU | 6.7× slower |
+
+The gap is consistent with earlier (now-known-correct) measurements.
+The three remaining structural levers (resident weights, multi-frame
+pipelining, INT8 throughput tuning) are the path to crossing iGPU
+latency — now working on real conv output, not zeros.
 
 **This closes the correctness gap.** The NPU chain is verified to
 actually compute the bottleneck function correctly at minimum
-viable dimensions.
+viable dimensions, AND the architectural pattern (per-block latency
+dropping with chain depth) holds at those dimensions.
 
 This isn't a data-layout issue alone. The kernel is running (timing
 correct), receives input bytes, but produces nothing. Hypotheses
