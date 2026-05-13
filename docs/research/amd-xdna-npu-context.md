@@ -860,6 +860,79 @@ actually compute the bottleneck function correctly at minimum
 viable dimensions, AND the architectural pattern (per-block latency
 dropping with chain depth) holds at those dimensions.
 
+### Real bottleneck identified — conv kernels aren't AIE2P-tuned (2026-05-13)
+
+Before committing to weight residency / multi-frame pipelining work,
+profiled the 8-col chain across spatial sizes at validated Ci=64:
+
+| W×H  | Time | Per-pixel |
+|------|-----:|----------:|
+| 16×16 | 494 μs | 1.93 μs/px |
+| 32×32 | 2805 μs | 2.74 μs/px |
+| 40×40 | 3190 μs | 1.99 μs/px |
+
+Per-pixel time is roughly constant — meaning the workload IS
+compute-bound, not DMA-bound. The numbers are stable around 2 μs/pixel.
+
+**Theoretical NPU peak** for 8 cols × 4 cores × 64 INT8 MACs/cycle ×
+1 GHz = 2048 GMAC/s. The per-block work is ~64000 MACs/pixel (across
+all 8 blocks in the chain). At theoretical peak that's **31 ns/pixel**.
+
+**We're hitting ~2000 ns/pixel = 1–2% of theoretical NPU peak.**
+
+The gap to iGPU isn't about resident weights or multi-frame
+pipelining — both are tiny fractions of the budget. **It's that the
+conv kernels we use are AIE2 (Phoenix) kernels cross-compiled to
+AIE2P.** They use `aie::vector<int8, 32>` (AIE2's SIMD width). AIE2P
+supports much wider vectors. The IRON GEMM kernels, which ARE
+AIE2P-tuned, hit 6.4 TFLOPS bf16 at large M·K·N = ~40% utilization —
+twenty to forty times higher than what we see on conv.
+
+**Realistic paths to bridge the gap:**
+
+1. **Express conv as matmul via im2col**, using the well-tuned IRON
+   GEMM kernels. For a Cin×Cout conv with KxK kernel and H×W spatial:
+   im2col produces (H·W, Cin·K·K) input × (Cin·K·K, Cout) weight →
+   (H·W, Cout) output. We've already validated GEMM hits ~6 TFLOPS at
+   2k×1k×1k shapes — YOLO 1×1 conv at 40×40×128→256 maps to a GEMM of
+   1600×128×256 (well below the GEMM's measured optimal). With
+   AIE2P-tuned GEMM, even 10% utilization beats the conv kernel's
+   1-2% by 5-10×.
+   
+   im2col cost is paid once on the host or once via a separate AIE
+   pass; the 3×3 conv → matmul reduction makes activation 9× larger
+   but the kernel becomes 5-10× faster — net positive at YOLO sizes.
+
+2. **Write a new conv kernel using AIE2P intrinsics directly.** AMD's
+   FastFlowLM ships closed-source kernels that exercise the full
+   AIE2P SIMD width. Recreating that work from scratch would be weeks
+   of kernel-author effort and isn't sustainable in a research repo.
+
+3. **Wait for AMD to ship AIE2P-tuned conv kernels in mlir-aie.**
+   The dashboard shows Convolution at 🟡 (in development for AIE2P).
+   When they land we drop them in and re-measure.
+
+**Strategic note for the project pipeline.** Today's NPU YOLO at 1-2%
+utilization isn't compelling vs iGPU. But:
+
+- The toolchain, build pipeline, chain architecture, 3D DMA, 8-column
+  scaling, correctness validation are all done and reusable.
+- When (1), (2), or (3) lands, the framework drops in cleanly — no
+  rewriting the chain glue.
+- For the demo *today*: detector stays on iGPU; VLM on NPU via
+  FastFlowLM (AMD's own AIE2P-tuned LM kernels). Both accelerators
+  productive, no per-frame contention. **This is the right split
+  given current AIE2P kernel maturity.**
+
+**Roadmap update — pivoting from naive structural levers:**
+
+5. ✅ DataShaper + correctness — done
+6. ⬜ ~~Resident weights~~ → low ROI (DMA not on critical path)
+7. ⬜ ~~Multi-frame pipelining~~ → likely low ROI same reason
+8. 🟡 **im2col → GEMM** for conv as a path to AIE2P-tuned compute
+9. ⬜ `NPUConvDetector` backend in project pipeline — wire what we
+   have for the demo flow; structural improvements drop in later
+
 This isn't a data-layout issue alone. The kernel is running (timing
 correct), receives input bytes, but produces nothing. Hypotheses
 remaining:
