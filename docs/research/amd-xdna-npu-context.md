@@ -237,6 +237,86 @@ wall-clock), giving us real on-device numbers.
 **Re-open this section when** Conv2D lands in IRON for AIE2P, or when we
 decide to invest in option 2.
 
+### Conv2D bring-up via mlir-aie programming_examples — 2026-05-13
+
+Update on Route 3 — conv kernel availability:
+
+The IRON repo doesn't ship a Conv2D operator for AIE2P (dashboard 🟡), but the
+**parent `Xilinx/mlir-aie` repo does** — `aie_kernels/aie2p/conv2dk1_i8.cc`
+(1×1 INT8) and `conv2dk14.cc` (3×3 INT8, despite the name). The
+`programming_examples/ml/conv2d/` directory has a working AIE design for the
+1×1 variant.
+
+**End-to-end build path that works on Strix Halo NPU5:**
+
+1. Generate MLIR-AIE design (lower-level "placed" variant — the high-level
+   IRON `conv2d.py` hits an API mismatch with the pinned `mlir_aie==2026033104`
+   wheel):
+   ```bash
+   python conv2d_placed.py npu2 32 32 64 64 0 > build/aie2.mlir
+   ```
+
+2. Compile the C++ kernel with Peano (LLVM-AIE) targeting `aie2p-none-unknown-elf`:
+   ```bash
+   $PEANO_INSTALL_DIR/bin/clang -O2 -std=c++20 \
+     --target=aie2p-none-unknown-elf -DINT8_ACT \
+     -I $MLIR_AIE_DIR/include \
+     -c $MLIR_AIE_REPO/aie_kernels/aie2p/conv2dk1_i8.cc -o conv2dk1_i8.o
+   ```
+
+3. Lower MLIR + link kernel to an xclbin via `aiecc` (the bundled
+   `--no-xchesscc --no-xbridge` flags use Peano end-to-end):
+   ```bash
+   aiecc --aie-generate-xclbin --aie-generate-npu-insts --no-compile-host \
+     --no-xchesscc --no-xbridge \
+     --xclbin-name=final.xclbin --npu-insts-name=insts.bin aie2.mlir
+   ```
+
+4. Dispatch via XRT from the IRON venv's Python — the example's `test.py`
+   reports `Avg NPU time` from on-device timestamps and validates against a
+   torch reference. **PASS on Strix Halo NPU5 first attempt.**
+
+**Measured (1×1 conv 32×32×64→64, 8.4 MFLOPs/call):**
+
+| Backend                                       | Precision | Latency | Throughput |
+|-----------------------------------------------|-----------|--------:|-----------:|
+| **iGPU Radeon 8060S (MIGraphX EP)**           | FP32      | **44 μs** | **192 GFLOPS** |
+| CPU numpy (oneDNN, Zen5 32 cores)             | FP32      | 48 μs   | 174 GFLOPS |
+| NPU XDNA2 (mlir-aie, 1 column, INT8)          | INT8      | 411 μs  | 20 GFLOPS  |
+
+**Why the NPU loses by 10× on this shape:** the shipped example uses **a single
+AIE column** with hard-coded buffer sizes tuned for 32×32 (4 KB activation
+chunks, 4 KB weight chunks). Per-call DMA setup overhead dominates the
+compute. The GEMM bench earlier hit 2.3 TFLOPS at 2048³ because the work
+amortises the DMA. YOLOv8's typical layer shape (20×20×256 to 80×80×64) sits
+in the "too small for the NPU to win, the iGPU already has a tuned BLAS
+path" zone.
+
+**What it would take to actually beat the iGPU on YOLO conv layers:**
+
+| Requirement | Status today | Cost |
+|---|---|---|
+| Multi-column tiling so 8 cols are productive | Single-col only; placed design needs rewrite | Days |
+| DMA chunking so big tensors don't blow the L2 buffer limit | Hard-coded 4 KB chunks; 64×64 input fails compile | Days |
+| 3×3 conv (the YOLO workhorse, not 1×1) | `conv2dk14.cc` exists in `aie_kernels/aie2p/`, no example pipeline | 1–2 weeks |
+| Fused conv → BN → SiLU | `silu.cc` + `rms_norm.cc` exist as sibling kernels; need fusion in the data-movement layer | 1 week |
+| Weights resident on-chip across multiple frame inferences | Each invocation reloads weights via DMA; pre-stage them in mem-tiles | Days |
+
+**Realistic next deliverable** (in priority order, each builds on the previous):
+
+1. **Multi-column 1×1 conv** — adapt `conv2d_placed.py` to spread the output
+   channel dim across NPU2Col4 or NPU2Col8. Expected: 4–8× speedup over the
+   current 20 GFLOPS, putting us in the same league as iGPU for tiny layers.
+2. **3×3 conv via `conv2dk14`** — the kernel is shipped; what's missing is
+   the IRON-style operator wrapper and a Strix-compatible build flow.
+3. **Wrap into the project pipeline** — `NPUConvDetector` backend that runs
+   only the conv-heavy backbone on NPU while head + NMS stay on CPU / iGPU.
+   Useful for the demo story even if it's slower than full-iGPU end-to-end.
+
+**Honest framing for the demo:** the NPU's win on this hardware is *not*
+faster YOLO. It's concurrency (detector iGPU, VLM NPU via FastFlowLM) and
+power. A Conv2D-on-NPU exhibit is a research artifact, not a perf upgrade.
+
 ## See also
 
 - `docs/research/versal-vek385-pipeline.md` — FPGA reference pipeline (same AIE-ML cores).
