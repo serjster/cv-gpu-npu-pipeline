@@ -1091,20 +1091,32 @@ it anyway, and adding it manually doesn't help.
 
 **This is a wheel-version compiler bug, not a design problem.** Options:
 
-1. **Newer mlir-aie wheel.** IRON pinned `2026033104`; wheels up to
-   `2026051305` exist. A newer one may fix the full-ELF GEMM path —
-   but upgrading risks breaking the GEMM operator IRON expects.
-   Worth a careful isolated test in a throwaway venv.
+1. **Newer mlir-aie wheel.** ❌ **Tested 2026-05-14 — dead end.**
+   Installed `2026051405` over the pinned `2026033104` and IRON's
+   GEMM operator immediately broke: `ModuleNotFoundError: No module
+   named 'aie.iron.placers'` — the newer wheel restructured the
+   `aie.iron` namespace. IRON pins `2026033104` precisely because its
+   operator code targets that wheel's module layout. Using a newer
+   wheel would require a matching newer IRON checkout (itself a
+   multi-day port), with no guarantee the full-ELF GEMM bug is even
+   fixed there. Rolled back; standard GEMM compile re-verified OK.
 2. **Hand-write the fused multi-matmul MLIR.** Combine the
    per-GEMM `aie.device` blocks into one module manually, manage the
    shared on-NPU buffers by hand. Substantial mlir-aie work but
    doesn't depend on the IRON fusion machinery.
 3. **Use the conv-kernel chain framework with GEMM-style kernels.**
-   Our `resnet_8col.py` chain works (single xclbin, multi-stage). If
-   we swap its `conv2dk1/3/skip` kernels for a matmul kernel that
-   uses AIE2P SIMD properly, we'd get the fused chain via a
-   known-working compile path. The kernel swap is the work.
-3. **Wait for AMD.** mlir-aie is actively developed; the full-ELF
+   ⭐ **Most promising.** Our `resnet_8col.py` chain already does the
+   thing we want — multiple kernels in **one xclbin**, intermediates
+   resident on-NPU via ObjectFifo, single dispatch — and it compiles
+   on the **standard xclbin path**, not the broken full-ELF path. The
+   only weakness is that its `conv2dk1/3/skip` microkernels are
+   AIE2-tuned (1-2% util). Swapping in an AIE2P-tuned matmul
+   microkernel that honours the same ObjectFifo tile contract gives
+   us the fused chain *and* good utilisation, entirely sidestepping
+   the full-ELF compiler bug. The work is extracting/adapting a
+   matmul microkernel to the chain's tile layout — multi-day, but no
+   external dependency.
+4. **Wait for AMD.** mlir-aie is actively developed; the full-ELF
    GEMM path will likely be fixed upstream.
 
 **Updated honest status of the NPU YOLO investigation:**
