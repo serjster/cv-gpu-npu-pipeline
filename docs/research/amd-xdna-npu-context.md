@@ -1259,38 +1259,47 @@ to AMD's IRON repo. IRON's operator library (`iron/operators/`) has
 gemm, gemv, mha, norms, activations — **no convolution at all**. That
 is the contribution gap.
 
-**First deliverable — `Conv2D` 1×1 operator — done and verified.**
+**`Conv2D` operator — built, general K×K, verified on the NPU.**
 
 Branch `conv2d-operator` in the IRON checkout (`~/.local/share/
 iron-work/iron`, off current `devel`, which pins exactly our venv's
 mlir-aie wheel). Four files in `iron/operators/conv2d/`:
 
 - `op.py` — `Conv2D(MLIROperator)` with NHWC input / OIYX weight /
-  NHWC output, conv params (`kernel_size`, `stride`, `padding`) plus
-  GEMM tile params. `kernel_size==1, stride==1, padding==0` enforced.
-- `design.py` — `conv2d_design` maps the 1×1 case onto GEMM's
-  `my_matmul` (1×1 conv == matmul over channels: NHWC flattens to
-  `(N·H·W, C_in)`, the OIYX weight is exactly GEMM's `b_col_maj` B).
+  NHWC output, general conv params (`kernel_size`, `stride`,
+  `padding` — square kernels, equal stride/padding per axis) plus
+  GEMM tile params. `im2col()` and `flatten_weight()` host-prep
+  helpers; `out_height`/`out_width`/`gemm_M`/`gemm_K` properties.
+- `design.py` — `conv2d_design` computes `M = batch·out_H·out_W`,
+  `K = kernel_size²·C_in`, `N = C_out` and delegates to GEMM's
+  `my_matmul`. The conv is **im2col + GEMM**: im2col runs host-side
+  (`Conv2D.im2col`, mirroring how the GEMM operator expects its
+  caller to prepare B), so the NPU design is purely the matmul on
+  the existing AIE2P `mm.cc` kernel. 1×1 is the degenerate case
+  where im2col is a reshape.
 - `reference.py` — `torch.nn.functional.conv2d` golden reference in
   the NHWC/OIYX layouts.
-- `test.py` — 25 parametrized cases (YOLO-realistic channel
-  projections / bottlenecks, 2- and 8-column, batch 1 and 2).
+- `test.py` — 50 parametrized cases: 1×1 channel projections, 3×3
+  same-padding, 3×3 strided (downsampling); 2- and 8-column; batch
+  1 and 2.
 
-**All 25 cases compile through the standard xclbin path and verify on
-the NPU** within rel/abs tol 0.01. `black --check` and `reuse lint`
-both pass (CONTRIBUTING.md CI gates). Single-shape smoke run:
-32×32×64→128, 2 cols — 159.8 µs, correct.
+**All 50 cases compile through the standard xclbin path and verify on
+the NPU** against the torch conv2d reference within rel/abs tol 0.01.
+`black` and `reuse lint` both pass (CONTRIBUTING.md CI gates).
 
 This rides GEMM's existing AIE2P path (`aie2p/mm.cc`), so it sidesteps
-every blocker above — no full-ELF, no fused-chain compiler bug. It is
-a complete, reviewable unit on its own.
+every blocker above — no full-ELF, no fused-chain compiler bug.
+Convolution — 1×1 *and* general K×K — now works on AIE2P / Strix Halo
+through IRON.
 
-**Next:** general K×K conv (`iron/operators/conv2d` task #34) needs an
-im2col stage — either a DMA access pattern in the design or a host
-prep helper — and is the larger piece. Per CONTRIBUTING.md ("open
-draft PRs ASAP for feedback") the 1×1 operator can go up as a DRAFT PR
-to `devel` first; opening it needs the user's GitHub fork and explicit
-go-ahead.
+**Status:** the operator is a complete, reviewable unit. Per
+CONTRIBUTING.md ("open draft PRs ASAP for feedback") it can go up as a
+DRAFT PR to `devel`. Opening the PR needs the user's GitHub fork and
+explicit go-ahead — it is a visible action on AMD's public repo.
+
+**Possible follow-ups for the PR review cycle:** im2col as an on-NPU
+DMA access pattern (eliminates the host copy); `dilation` / grouped
+conv; non-square kernels.
 
 ## See also
 
