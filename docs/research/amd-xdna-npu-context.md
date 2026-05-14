@@ -1119,6 +1119,42 @@ it anyway, and adding it manually doesn't help.
 4. **Wait for AMD.** mlir-aie is actively developed; the full-ELF
    GEMM path will likely be fixed upstream.
 
+#### Option 3 — fully scoped (2026-05-14)
+
+Did the design archaeology so the chained-GEMM build is well-defined:
+
+**Kernel** — `mlir_aie/include/aie_kernels/aie2p/mm.cc` is the
+AIE2P-tuned matmul microkernel the IRON GEMM operator already uses.
+It exports a single-tile C entry `matmul_bf16_bf16(bf16 *a, bf16 *b,
+bf16 *c)` plus `zero_bf16(bf16 *c)`, tile size `DIM_M×DIM_K×DIM_N`
+(default 64³, overridable with `-DDIM_M` etc.). The microkernel is
+**not** the problem and does **not** need rewriting — it stays
+verbatim.
+
+**Design to fork** — `iron/operators/gemm/design.py::my_matmul`. Its
+structure per compute tile (`core_fn`, lines 440-474): `zero(C)` →
+loop K-tiles doing `matmul(a,b,C)` → release C. Data movement:
+shim→L2→split to rows for A, shim→L2→forward per col for B,
+join per col→L2→shim for C. Each `Worker` is independent.
+
+**The change for a chain** — instead of stage-0's `C_l1l2` fifo
+joining out to `C_l2l3`→shim, route it to stage-1's `A_l2l1` input.
+That is the depth-first on-chip hand-off `resnet_8col.py` already
+does for conv kernels. The one real subtlety: stage-0's C tile
+layout (`m×n`) must be re-streamed into stage-1's A tile layout
+(`m×k`) — a `dims_to_stream` reshape on the intervening mem tile,
+with `stage0.N == stage1.K`. For a 256→128→128 bottleneck both
+inner dims are 128, divisible by the 64-tile, so the layout maths
+is clean.
+
+**Compile path** — standard xclbin (`resnet_8col.py`'s known-good
+path), never `--generate-full-elf`. This is the whole point: it
+sidesteps the compiler bug.
+
+Remaining work is the hand-build of the 2-stage `my_matmul` variant
+and its mem-tile re-layout fifo — multi-day, but every piece is now
+identified and there is no external dependency.
+
 **Updated honest status of the NPU YOLO investigation:**
 
 The full picture is now mapped. Every layer of the stack is
