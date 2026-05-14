@@ -1252,6 +1252,46 @@ aiecc --aie-generate-xclbin --aie-generate-npu-insts --no-compile-host \
 python test_strix.py -x final.xclbin -i insts.bin -wd 8 -ht 8 -ic 64
 ```
 
+## Upstreaming to IRON — Conv2D operator (2026-05-14)
+
+Decision: rather than keep the conv work as local scratch, upstream it
+to AMD's IRON repo. IRON's operator library (`iron/operators/`) has
+gemm, gemv, mha, norms, activations — **no convolution at all**. That
+is the contribution gap.
+
+**First deliverable — `Conv2D` 1×1 operator — done and verified.**
+
+Branch `conv2d-operator` in the IRON checkout (`~/.local/share/
+iron-work/iron`, off current `devel`, which pins exactly our venv's
+mlir-aie wheel). Four files in `iron/operators/conv2d/`:
+
+- `op.py` — `Conv2D(MLIROperator)` with NHWC input / OIYX weight /
+  NHWC output, conv params (`kernel_size`, `stride`, `padding`) plus
+  GEMM tile params. `kernel_size==1, stride==1, padding==0` enforced.
+- `design.py` — `conv2d_design` maps the 1×1 case onto GEMM's
+  `my_matmul` (1×1 conv == matmul over channels: NHWC flattens to
+  `(N·H·W, C_in)`, the OIYX weight is exactly GEMM's `b_col_maj` B).
+- `reference.py` — `torch.nn.functional.conv2d` golden reference in
+  the NHWC/OIYX layouts.
+- `test.py` — 25 parametrized cases (YOLO-realistic channel
+  projections / bottlenecks, 2- and 8-column, batch 1 and 2).
+
+**All 25 cases compile through the standard xclbin path and verify on
+the NPU** within rel/abs tol 0.01. `black --check` and `reuse lint`
+both pass (CONTRIBUTING.md CI gates). Single-shape smoke run:
+32×32×64→128, 2 cols — 159.8 µs, correct.
+
+This rides GEMM's existing AIE2P path (`aie2p/mm.cc`), so it sidesteps
+every blocker above — no full-ELF, no fused-chain compiler bug. It is
+a complete, reviewable unit on its own.
+
+**Next:** general K×K conv (`iron/operators/conv2d` task #34) needs an
+im2col stage — either a DMA access pattern in the design or a host
+prep helper — and is the larger piece. Per CONTRIBUTING.md ("open
+draft PRs ASAP for feedback") the 1×1 operator can go up as a DRAFT PR
+to `devel` first; opening it needs the user's GitHub fork and explicit
+go-ahead.
+
 ## See also
 
 - `docs/research/versal-vek385-pipeline.md` — FPGA reference pipeline (same AIE-ML cores).
