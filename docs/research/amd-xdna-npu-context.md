@@ -1038,12 +1038,94 @@ in GEMM at the building-block level is **roadmap item #10**.
 7. ⬜ ~~Multi-frame pipelining~~ — dropped (same reason)
 8. ✅ im2col → GEMM validated for single-layer 3×3 conv
 9. ⬜ im2col on NPU (host-side currently adds 100–450 μs/layer)
-10. ⬜ **Multi-GEMM fused chain xclbin** — the critical missing piece
-    for end-to-end NPU YOLO competitiveness
-11. ⬜ `NPUConvDetector` backend in project pipeline (drops in when
-    #10 is ready)
+10. 🔴 **Multi-GEMM fused chain xclbin** — blocked by a wheel-version
+    compiler bug (see below)
+11. ⬜ `NPUConvDetector` backend in project pipeline
 
 **Files:** `bench_gemm_chain.py` alongside `bench_conv_via_gemm.py`.
+
+### Fused multi-GEMM chain — blocked by mlir-aie full-ELF compiler bug (2026-05-14)
+
+IRON ships exactly the machinery we need: `FusedMLIROperator` chains
+multiple ops into one xclbin (intermediate buffers stay on-NPU, single
+host dispatch). The Llama 3.2 1B example uses it to fuse an entire
+transformer block (RMSNorm + GEMV + SiLU + eltwise-mul + residual).
+
+Usage is clean:
+
+```python
+fused = FusedMLIROperator(
+    "fused_3gemm_bottleneck",
+    runlist=[
+        (gemm0, "act_in", "w0", "temp0"),   # reduce
+        (gemm1, "temp0",  "w1", "temp1"),   # process — temp0 stays on-NPU
+        (gemm2, "temp1",  "w2", "act_out"), # expand
+    ],
+    input_args=["act_in", "w0", "w1", "w2"],
+    output_args=["act_out"],
+)
+fused.compile()
+```
+
+**But `fused.compile()` crashes (SIGABRT) in aiecc's resource-allocation
+pipeline.** Narrowed it down:
+
+- 3-GEMM fused: crash
+- 2-GEMM fused: crash
+- **1-GEMM through `FusedMLIROperator`: also crash**
+
+So it's not multi-op fusion — it's that **the `--generate-full-elf`
+aiecc path crashes for the GEMM operator** in our pinned
+`mlir_aie==0.0.1.2026033104` wheel. The standard xclbin path works for
+GEMM (we've run it dozens of times); only the full-ELF path (which
+fusion requires) is broken.
+
+The Llama example works because it fuses **GEMV** (matrix-vector) ops,
+not **GEMM** (matrix-matrix). GEMV's simpler single-column tile layout
+is full-ELF-compatible; GEMM's multi-column layout isn't, in this
+wheel version.
+
+Tried `--alloc-scheme=basic-sequential` (the flag our conv chains
+needed) — still crashes. The IRON full-ELF compile path doesn't pass
+it anyway, and adding it manually doesn't help.
+
+**This is a wheel-version compiler bug, not a design problem.** Options:
+
+1. **Newer mlir-aie wheel.** IRON pinned `2026033104`; wheels up to
+   `2026051305` exist. A newer one may fix the full-ELF GEMM path —
+   but upgrading risks breaking the GEMM operator IRON expects.
+   Worth a careful isolated test in a throwaway venv.
+2. **Hand-write the fused multi-matmul MLIR.** Combine the
+   per-GEMM `aie.device` blocks into one module manually, manage the
+   shared on-NPU buffers by hand. Substantial mlir-aie work but
+   doesn't depend on the IRON fusion machinery.
+3. **Use the conv-kernel chain framework with GEMM-style kernels.**
+   Our `resnet_8col.py` chain works (single xclbin, multi-stage). If
+   we swap its `conv2dk1/3/skip` kernels for a matmul kernel that
+   uses AIE2P SIMD properly, we'd get the fused chain via a
+   known-working compile path. The kernel swap is the work.
+3. **Wait for AMD.** mlir-aie is actively developed; the full-ELF
+   GEMM path will likely be fixed upstream.
+
+**Updated honest status of the NPU YOLO investigation:**
+
+The full picture is now mapped. Every layer of the stack is
+understood:
+
+| Layer | Status |
+|-------|--------|
+| XRT / driver / NPU reachable | ✅ works |
+| mlir-aie targets AIE2P | ✅ works |
+| Conv designs compile (3D DMA, 8-col) | ✅ works |
+| Multi-block chain (conv kernels) | ✅ works, correct, but kernels are AIE2-tuned → 1-2% util |
+| Single GEMM (AIE2P-tuned) | ✅ works, ~40% util, 3× iGPU |
+| im2col → GEMM as conv | ✅ validated, 20× the conv-kernel util |
+| Fused multi-GEMM chain | 🔴 blocked — full-ELF GEMM compile bug in pinned wheel |
+
+**The remaining work is well-defined** (one of the 3 options above)
+but each is multi-day and one depends on AMD. **For the project, the
+demo split stands: detector on iGPU, VLM on NPU via FastFlowLM** —
+both validated, both shipping today.
 
 This isn't a data-layout issue alone. The kernel is running (timing
 correct), receives input bytes, but produces nothing. Hypotheses
