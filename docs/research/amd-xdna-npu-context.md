@@ -1303,6 +1303,8 @@ conv; non-square kernels.
 
 ## See also
 
+- `docs/research/iron-conv2d-pr.md` — **active track:** IRON Conv2D operator PR progress tracker.
+- `docs/research/npu-yolo-roadmap.md` — **paused track:** resume doc for the run-YOLO-on-NPU objective.
 - `docs/research/versal-vek385-pipeline.md` — FPGA reference pipeline (same AIE-ML cores).
 - `docs/research/fastflowlm.md` — adjacent prior research on this NPU.
 - `docs/references.md` — raw link list (kernel driver telemetry + RyzenAI-SW).
